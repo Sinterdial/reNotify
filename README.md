@@ -4,5 +4,5 @@
 1. Download flow.json and import it to ur nodered
 2. Change node configurations in ur own need
 
-mostly Chinese
+mostly Chinese<br>
 based on Node-RED
