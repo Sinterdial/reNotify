@@ -1,5 +1,4 @@
-# reNotify
-# Forward webhook from everywhere to ntfy (or other similar service)
+# reNotify <br>Forward webhook from everywhere to ntfy (or other similar service)
 
 ## How to Use
 1. Download flow.json and import it to ur nodered
