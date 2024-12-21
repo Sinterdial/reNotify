@@ -2,7 +2,7 @@
 
 ## How to Use
 1. Download flow.json and import it to ur nodered
-2. Change node configurations in ur own need
+2. Change node configurations on ur own need
 
 mostly Chinese<br>
 based on Node-RED
