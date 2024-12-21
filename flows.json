@@ -1,0 +1,740 @@
+[
+    {
+        "id": "384abcadb0af9821",
+        "type": "tab",
+        "label": "转发封闭的Webhook请求到ntfy",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "958c190e9afc8971",
+        "type": "http in",
+        "z": "384abcadb0af9821",
+        "name": "接受其他应用包装的通知",
+        "url": "/renotify",
+        "method": "post",
+        "upload": true,
+        "swaggerDoc": "",
+        "x": 110,
+        "y": 920,
+        "wires": [
+            [
+                "eabc066bdd78c542",
+                "58673e9845f4a0ef"
+            ]
+        ]
+    },
+    {
+        "id": "c8eb98633434d655",
+        "type": "http request",
+        "z": "384abcadb0af9821",
+        "name": "Webhook转发到nfty",
+        "method": "POST",
+        "ret": "bin",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.8:9050/RSS?tpl=1&t=🎉其乐Keylol上有新的临时工消息！！！&m=%7B%7B.title%7D%7D",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Authorization",
+                "keyValue": "",
+                "valueType": "other",
+                "valueValue": "Bearer tk_tl1po03abi41c7fe4zk3m0lagfd6s"
+            },
+            {
+                "keyType": "other",
+                "keyValue": "Priority",
+                "valueType": "other",
+                "valueValue": "4"
+            },
+            {
+                "keyType": "other",
+                "keyValue": "Icon",
+                "valueType": "other",
+                "valueValue": "https://keylol.com/template/steamcn_metro/src/img/common/icon_with_text_256h.png"
+            },
+            {
+                "keyType": "other",
+                "keyValue": "Click",
+                "valueType": "msg",
+                "valueValue": "payload.link"
+            }
+        ],
+        "x": 1290,
+        "y": 180,
+        "wires": [
+            [
+                "217b364ca74db0e3"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "72c8573da42fea06",
+        "type": "switch",
+        "z": "384abcadb0af9821",
+        "name": "判断是何种RSSPush主题",
+        "property": "payload.task_title",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "cont",
+                "v": "其乐",
+                "vt": "str"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 730,
+        "y": 180,
+        "wires": [
+            [
+                "c8eb98633434d655"
+            ],
+            [
+                "7f4109991d687fbd"
+            ]
+        ]
+    },
+    {
+        "id": "eabc066bdd78c542",
+        "type": "debug",
+        "z": "384abcadb0af9821",
+        "name": "观察传入数据特征",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 350,
+        "y": 760,
+        "wires": []
+    },
+    {
+        "id": "7526ce23d51cdf2a",
+        "type": "http response",
+        "z": "384abcadb0af9821",
+        "name": "无匹配的ntfy订阅主题",
+        "statusCode": "500",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 700,
+        "y": 1400,
+        "wires": []
+    },
+    {
+        "id": "7f4109991d687fbd",
+        "type": "switch",
+        "z": "384abcadb0af9821",
+        "d": true,
+        "name": "判断是否为MoviePilot通知",
+        "property": "payload.data.mediainfo",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "nempty"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 210,
+        "y": 1220,
+        "wires": [
+            [
+                "fc4020522ee9b4f9"
+            ],
+            [
+                "7526ce23d51cdf2a"
+            ]
+        ],
+        "info": "分发处理MoviePilot通知"
+    },
+    {
+        "id": "fc4020522ee9b4f9",
+        "type": "switch",
+        "z": "384abcadb0af9821",
+        "name": "判断MP事件类型",
+        "property": "payload.type",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "subscribe.added",
+                "vt": "str"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 690,
+        "y": 920,
+        "wires": [
+            [
+                "1e1445ebae1fe53a"
+            ],
+            [
+                "66eb0c795259065a"
+            ]
+        ]
+    },
+    {
+        "id": "fe3e3f47e53c7405",
+        "type": "http request",
+        "z": "384abcadb0af9821",
+        "name": "将打包好的JSON对象发送给nfty",
+        "method": "POST",
+        "ret": "bin",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.8:9050/",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Authorization",
+                "keyValue": "",
+                "valueType": "other",
+                "valueValue": "Bearer tk_tl1po03abi41c7fe4zk3m0lagfd6s"
+            },
+            {
+                "keyType": "other",
+                "keyValue": "Priority",
+                "valueType": "other",
+                "valueValue": "3"
+            }
+        ],
+        "x": 1330,
+        "y": 900,
+        "wires": [
+            [
+                "f3222f36d1c0363e"
+            ]
+        ],
+        "info": "将通知重新打包转发到ntfy的MoviePilot频道\r\n这里注意如果要用JSON的话转发URL里不能带订阅主题"
+    },
+    {
+        "id": "1e1445ebae1fe53a",
+        "type": "change",
+        "z": "384abcadb0af9821",
+        "name": "重新包装消息",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.topic",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.title_year & ( payload.data.mediainfo.season = null ? \" \" : (' S0' & payload.data.mediainfo.season & ' ') )& '已添加订阅'",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.message",
+                "pt": "msg",
+                "to": "'评分：' & payload.data.mediainfo.vote_average & '，来自用户：' & payload.data.username ",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.actions",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.homepage = null ? \t[\t    {\t        \"action\": \"view\",\t        \"label\": \"TMDB\",\t        \"url\": payload.data.mediainfo.detail_link\t    }\t]\t:\t[\t    {\t        \"action\": \"view\",\t        \"label\": \"TMDB\",\t        \"url\": payload.data.mediainfo.detail_link\t    },\t    \t    {\t        \"action\": \"view\",\t        \"label\": \"官网\",\t        \"url\": payload.data.mediainfo.homepage\t    }\t]",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.logo_path",
+                "tot": "msg"
+            },
+            {
+                "t": "set",
+                "p": "payload.click",
+                "pt": "msg",
+                "to": "https://mp.181691.xyz:4584/#/dashboard",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.attach",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.backdrop_path",
+                "tot": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 980,
+        "y": 900,
+        "wires": [
+            [
+                "fe3e3f47e53c7405"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "9780f7e6ef8e6642",
+        "type": "http response",
+        "z": "384abcadb0af9821",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 1760,
+        "y": 900,
+        "wires": []
+    },
+    {
+        "id": "58673e9845f4a0ef",
+        "type": "function",
+        "z": "384abcadb0af9821",
+        "name": "根据传入内容分发通知",
+        "func": "// 输出1：判断是否为PushRSS通知\nif ( \"task_title\" in msg.payload ){\n    return [msg, null, null, null];\n}\n// 输出2：判断是否为MoviePilot通知\nelse if( \"data\" in msg.payload){\n    if (\"mediainfo\" in msg.payload.data){\n        return [null, msg, null, null];\n    }\n    else{\n        \n    }\n}\n// 输出3：判断是否为Docker Image Update Notifier通知\nelse if( \"diun_version\" in msg.payload ){\n    return [null, null, msg, null];\n}\n// 输出4：无匹配来源，响应相应信息\nelse{\n    return [null, null, null, context.get(\"error\")];\n}",
+        "outputs": 4,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "// 部署节点后，此处添加的代码将运行一次。 \nvar newMsg = {\n    payload: {\n        title: \"未知来源请求\",\n        sender: \"Unknown\",\n        destination: \"Self-Hosted Ntfy\"\n    }\n};\n\ncontext.set(\"error\", newMsg);",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 920,
+        "wires": [
+            [
+                "72c8573da42fea06"
+            ],
+            [
+                "fc4020522ee9b4f9"
+            ],
+            [
+                "caefea99b7251a3b",
+                "d88076e4d7713c05"
+            ],
+            [
+                "7526ce23d51cdf2a",
+                "d4716ba26fcf82c3"
+            ]
+        ],
+        "inputLabels": [
+            "传入数据"
+        ],
+        "outputLabels": [
+            "RSSPush",
+            "MoviePilot",
+            "DockerImageUpdateNotify",
+            "NoMatched"
+        ],
+        "icon": "font-awesome/fa-arrows-alt"
+    },
+    {
+        "id": "614caca653097b1e",
+        "type": "debug",
+        "z": "384abcadb0af9821",
+        "name": "debug 1",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 920,
+        "y": 1480,
+        "wires": []
+    },
+    {
+        "id": "66eb0c795259065a",
+        "type": "http response",
+        "z": "384abcadb0af9821",
+        "name": "无匹配的MP事件类型",
+        "statusCode": "400",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 1000,
+        "y": 940,
+        "wires": []
+    },
+    {
+        "id": "217b364ca74db0e3",
+        "type": "change",
+        "z": "384abcadb0af9821",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"成功处理\",\"type\":\"其乐临时工消息\",\"sender\":\"RSSPush\",\"destination\":\"Self-Hosted Ntfy\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 1570,
+        "y": 180,
+        "wires": [
+            [
+                "428e1588e07eb094"
+            ]
+        ]
+    },
+    {
+        "id": "f3222f36d1c0363e",
+        "type": "change",
+        "z": "384abcadb0af9821",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"成功处理\",\"type\":\"添加订阅成功\",\"sender\":\"PushRSS\",\"destination\":\"Self-Hosted Ntfy\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 1570,
+        "y": 900,
+        "wires": [
+            [
+                "9780f7e6ef8e6642"
+            ]
+        ]
+    },
+    {
+        "id": "428e1588e07eb094",
+        "type": "http response",
+        "z": "384abcadb0af9821",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 1760,
+        "y": 180,
+        "wires": []
+    },
+    {
+        "id": "caefea99b7251a3b",
+        "type": "change",
+        "z": "384abcadb0af9821",
+        "name": "重新包装消息",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.topic",
+                "pt": "msg",
+                "to": "Diun",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "'8100群晖上的Docker: ' & $reverse($split(payload.image, \"/\"))[1] & '/' & $substringBefore($reverse($split(payload.image, \"/\"))[0], ':') & '有新版本发布'\t",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.message",
+                "pt": "msg",
+                "to": "'### ' & '**' & '发布平台：' & payload.provider & '**' & '\\n' &\t'### ' & '映像全称：' & payload.image & '\\n' &\t'#### ' & '**' & '更新时间：' & $fromMillis($toMillis(payload.created), '[Y0001]/[M01]/[D01] [h#1]:[m01]') & '**' & '\\n' &\t'支持架构：' & '`' & payload.platform & '`' & '\\n' &\t'唯一标识：' & '`' & payload.digest & '`' & '\\n' &\t'抓取列表：' & '`' & payload.mime_type & '`' & '\\n' &\t'Diun版本：' & '`' & payload.diun_version & '`'",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.actions",
+                "pt": "msg",
+                "to": "$contains(payload.image, \"docker.io\") ? \t[\t    {\t        \"action\": \"view\",\t        \"label\": \"Docker Hub\",\t        \"url\": payload.hub_link\t    }\t]\t:\t[\t    {\t    }\t    \t    {\t    }\t]",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "$contains(payload.image, \"docker.io\") ? \t'http://192.168.5.8:8855/images/2024/12/21/Moby-logo.png'\t:\t''",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.diun_version",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.hostname",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.status",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.provider",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.image",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.hub_llink",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.mime_type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.digest",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.created",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.platform",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.metadata",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.actions",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 680,
+        "y": 1160,
+        "wires": [
+            [
+                "e30c774c20dc50e4",
+                "614caca653097b1e"
+            ]
+        ],
+        "inputLabels": [
+            "来自diun的消息"
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "e30c774c20dc50e4",
+        "type": "http request",
+        "z": "384abcadb0af9821",
+        "name": "将打包好的JSON对象发送给nfty",
+        "method": "POST",
+        "ret": "bin",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.8:9050/",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Authorization",
+                "keyValue": "",
+                "valueType": "other",
+                "valueValue": "Bearer tk_tl1po03abi41c7fe4zk3m0lagfd6s"
+            },
+            {
+                "keyType": "other",
+                "keyValue": "Priority",
+                "valueType": "other",
+                "valueValue": "3"
+            },
+            {
+                "keyType": "other",
+                "keyValue": "Markdown",
+                "valueType": "other",
+                "valueValue": "yes"
+            }
+        ],
+        "x": 1030,
+        "y": 1160,
+        "wires": [
+            [
+                "5269fa3aceca98b0"
+            ]
+        ],
+        "info": "将通知重新打包转发到ntfy的MoviePilot频道\r\n这里注意如果要用JSON的话转发URL里不能带订阅主题"
+    },
+    {
+        "id": "5269fa3aceca98b0",
+        "type": "change",
+        "z": "384abcadb0af9821",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"成功处理\",\"type\":\"Docker映像有更新发布\",\"sender\":\"Diun\",\"destination\":\"Self-Hosted Ntfy\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 1270,
+        "y": 1160,
+        "wires": [
+            [
+                "2dda5f57bc1ab5c8"
+            ]
+        ]
+    },
+    {
+        "id": "2dda5f57bc1ab5c8",
+        "type": "http response",
+        "z": "384abcadb0af9821",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 1560,
+        "y": 1160,
+        "wires": []
+    },
+    {
+        "id": "d4716ba26fcf82c3",
+        "type": "debug",
+        "z": "384abcadb0af9821",
+        "name": "debug 2",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 580,
+        "y": 1560,
+        "wires": []
+    },
+    {
+        "id": "d88076e4d7713c05",
+        "type": "change",
+        "z": "384abcadb0af9821",
+        "d": true,
+        "name": "diun测试用",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.topic",
+                "pt": "msg",
+                "to": "Diun",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.hostname & '上的容器有新版本发布' & '\\n' &\t$reverse($split(payload.image, \"/\"))[1] & '/' & $reverse($split(payload.image, \"/\"))[0]",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.message",
+                "pt": "msg",
+                "to": "'## ' & '**' & '发布平台：' & payload.provider & '**' & '\\n' &\t'## ' & '映像全称：' & payload.image & '\\n' &\t'### ' & '**' & '更新时间：' & $fromMillis($toMillis(payload.created), '[Y0001]/[M01]/[D01] [h#1]:[m01]') & '**' & '\\n' &\t'支持架构：' & payload.platform & '\\n' &\t'唯一标识：' & '`' & payload.digest & '\\n' &\t'抓取列表：' & payload.mime_type & '\\n' & '`'",
+                "tot": "jsonata"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 690,
+        "y": 1220,
+        "wires": [
+            [
+                "e30c774c20dc50e4",
+                "614caca653097b1e"
+            ]
+        ],
+        "inputLabels": [
+            "来自diun的消息"
+        ],
+        "info": "diun的测试通知里不含url，所以没办法加action，这个节点仅用于测试"
+    }
+]
