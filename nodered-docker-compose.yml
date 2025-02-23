@@ -1,0 +1,20 @@
+version: '3'
+
+services:
+  nodered:
+    image: nodered/node-red:latest
+    container_name: nodered
+    restart: always
+    ports:
+      - "Node-RED服务端口:1880" # 修改端口
+    volumes:
+      - ./nodered/data:/data # 数据持久化到本地
+      - ./nodered/files:/files # 储存Webhook通知
+    environment:
+      - TZ=Asia/Shanghai  # 设置时区为上海，如果需要其他时区可修改
+    networks:
+      - nodered
+
+networks:
+  nodered:
+    driver: bridge
