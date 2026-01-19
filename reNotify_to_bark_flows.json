@@ -1,0 +1,2558 @@
+[
+    {
+        "id": "70644c6a954d3c15",
+        "type": "tab",
+        "label": "转发Webhook到Bark示例",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "0ecf79b17d3e80ab",
+        "type": "http in",
+        "z": "70644c6a954d3c15",
+        "name": "接受其他应用包装的通知",
+        "url": "/renotify",
+        "method": "post",
+        "upload": true,
+        "swaggerDoc": "",
+        "x": 220,
+        "y": 880,
+        "wires": [
+            [
+                "edbe02b8888c659c"
+            ]
+        ]
+    },
+    {
+        "id": "df587b1c1c23c46a",
+        "type": "debug",
+        "z": "70644c6a954d3c15",
+        "name": "观察传入数据特征",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 460,
+        "y": 720,
+        "wires": []
+    },
+    {
+        "id": "4fdf3cf1d03a2a73",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "无匹配的 Bark 订阅主题",
+        "statusCode": "400",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 1620,
+        "y": 1720,
+        "wires": []
+    },
+    {
+        "id": "e714a9274b158f92",
+        "type": "switch",
+        "z": "70644c6a954d3c15",
+        "name": "判断MP事件类型",
+        "property": "payload.type",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "subscribe.added",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "download.added",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "subscribe.complete",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "subscribe.modified",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "transfer.complete",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "subscribe.deleted",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "notice.message",
+                "vt": "str"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 8,
+        "x": 1600,
+        "y": 880,
+        "wires": [
+            [
+                "a6bdb08961a55a51"
+            ],
+            [
+                "1bb420ea872f8ebe"
+            ],
+            [
+                "9f8a2d9bb4efb3a9"
+            ],
+            [
+                "1b656cc8fd063fdc"
+            ],
+            [
+                "80c1e711dae30beb"
+            ],
+            [
+                "22ba0c83f539b6f4"
+            ],
+            [
+                "a9fb27824cf7d666"
+            ],
+            [
+                "7eea4b4f2a61c546"
+            ]
+        ],
+        "outputLabels": [
+            "订阅已添加",
+            "下载已添加",
+            "订阅已完成",
+            "订阅已修改",
+            "资源已入库",
+            "订阅已删除",
+            "站点消息",
+            "无匹配的MP事件类型"
+        ]
+    },
+    {
+        "id": "a6bdb08961a55a51",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装订阅已添加通知",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.title_year & (payload.data.context.meta_info.season_episode != '' ? ' ' & payload.data.context.meta_info.season_episode : '' ) & ' 已添加订阅'",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "\"【评分】\" & payload.data.mediainfo.vote_average & \"\\n\" &\t\"【流行度】\" & $round(payload.data.mediainfo.popularity, 2) & \"\\n\" &\t\"【类别】\" & payload.data.mediainfo.category & \"\\n\" &\t\"【来自用户】\" & payload.data.username & \"\\n\\n\" &\t\"🗃️在MP中查看🗃️ \" & (payload.data.mediainfo.type = \"电影\" ? \"https://mp.domain.com:port/#/subscribe/movie\" : \"https://mp.domain.com:port/#/subscribe/tv\") & \"\\n\" &\t\"🔗在TMDB中查看🔗 \" & payload.data.mediainfo.detail_link & \"\\n\" &\t(payload.data.mediainfo.homepage = \"\" ? \"\" : (\"🌐查看影视官网🌐 \" & payload.data.mediainfo.homepage))",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.logo_path != null ? payload.data.mediainfo.logo_path : \"https://chevereto.domain.com:port/images/2024/12/26/1000087726.png\"",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.attach",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.backdrop_path",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.time",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2040,
+        "y": 420,
+        "wires": [
+            [
+                "c056d043d4c81d47"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "1660a3df49e93737",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2950,
+        "y": 420,
+        "wires": []
+    },
+    {
+        "id": "344db5458c011fd5",
+        "type": "function",
+        "z": "70644c6a954d3c15",
+        "name": "根据传入内容分发通知",
+        "func": "/***********************\n * Wallos payload 修复\n ***********************/\nif (msg.payload && typeof msg.payload === \"object\") {\n    // Wallos 的 JSON 被塞进了 key 里\n    const jsonKey = Object.keys(msg.payload)\n        .find(k => k.includes('\"days_until\"'));\n\n    if (jsonKey) {\n        try {\n            const fixed = JSON.parse(`{${jsonKey}}`);\n            msg.payload = fixed;\n        } catch (e) {\n            node.warn(\"Wallos payload 修复失败\");\n        }\n    }\n}\n\n/***********************\n * 输出1：Miniflux Webhook\n ***********************/\nif (\"feed\" in msg.payload) {\n    return [msg, null, null, null, null, null];\n}\n\n/***********************\n * 输出2：MoviePilot\n ***********************/\nelse if (\"data\" in msg.payload) {\n\n    // 普通通知\n    if (\n        \"mediainfo\" in msg.payload.data ||\n        \"context\" in msg.payload.data ||\n        \"subscribe_id\" in msg.payload.data\n    ) {\n        return [null, msg, null, null, null, null];\n    }\n\n    // 站点相关通知\n    else if (\n        \"mtype\" in msg.payload.data &&\n        msg.payload.data.mtype?._value_ === \"站点\"\n    ) {\n        return [null, msg, null, null, null, null];\n    }\n\n    // 刷流插件通知\n    else if (msg.payload.type === \"plugin.triggered\") {\n        return [null, msg, null, null, null, null];\n    }\n}\n\n/***********************\n * 输出3：DIUN\n ***********************/\nelse if (\"diun_version\" in msg.payload) {\n    return [null, null, msg, null, null, null];\n}\n\n/***********************\n * 输出4：Wallos\n ***********************/\nelse if (msg.payload.days_until !== undefined) {\n    return [null, null, null, msg, null, null];\n}\n\n/***********************\n * 输出5：Grafana\n ***********************/\nelse if (\"alerts\" in msg.payload) {\n    return [null, null, null, null, msg, null];\n}\n\n/***********************\n * 输出n：未知来源\n ***********************/\nelse {\n    msg.payload = context.get(\"error\")?.payload ?? msg.payload;\n    return [null, null, null, null, null, msg];\n}\n",
+        "outputs": 6,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "// 部署节点后，此处添加的代码将运行一次。 \n// 定义格式化时间戳函数，取自ChatGPT\nglobal.set(\"formatTimestamp\", function (timestamp) {\n    const date = new Date(timestamp);\n\n    // 获取各部分时间\n    const year = date.getFullYear();\n    const month = String(date.getMonth() + 1).padStart(2, '0'); // 月份从 0 开始，需要加 1\n    const day = String(date.getDate()).padStart(2, '0');\n    const hour = String(date.getHours()).padStart(2, '0'); // 24 小时制\n    const minute = String(date.getMinutes()).padStart(2, '0');\n    const second = String(date.getSeconds()).padStart(2, '0');\n\n    // 格式化为 \"某年某月某日某时某分某秒\" 的形式\n    return `${year} 年 ${month} 月 ${day} 日 ${hour} 时 ${minute} 分 ${second} 秒`;\n});\n// console.log(formatTimestampWithPadding(timestamp));\n// 输出：2025年01月19日06时53分54秒\n\n\n// 部署节点后，此处添加的代码将运行一次。 \nvar newMsg = {\n    payload: {\n        title: \"无匹配通知类型\",\n        type: \"通知转发失败\",\n        sender: \"未知\",\n        destination: \"Self-Hosted Ntfy\"\n    }\n};\n\ncontext.set(\"error\", newMsg);",
+        "finalize": "",
+        "libs": [],
+        "x": 1310,
+        "y": 880,
+        "wires": [
+            [
+                "6be35ffa6ff21fa2"
+            ],
+            [
+                "e714a9274b158f92"
+            ],
+            [
+                "45ea018acb2f1322"
+            ],
+            [
+                "ea028ea73834dd8a"
+            ],
+            [
+                "e772457ebce62cdf"
+            ],
+            [
+                "4fdf3cf1d03a2a73"
+            ]
+        ],
+        "inputLabels": [
+            "传入数据"
+        ],
+        "outputLabels": [
+            "RSSPush",
+            "MoviePilot",
+            "DockerImageUpdateNotify",
+            "Wallos",
+            "Grafana",
+            "NoMatched"
+        ],
+        "icon": "font-awesome/fa-arrows-alt"
+    },
+    {
+        "id": "8a8f97002208c252",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "无匹配的MP事件类型",
+        "statusCode": "400",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2410,
+        "y": 1140,
+        "wires": []
+    },
+    {
+        "id": "182cd311c5e48e07",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"订阅添加通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2760,
+        "y": 420,
+        "wires": [
+            [
+                "1660a3df49e93737"
+            ]
+        ]
+    },
+    {
+        "id": "45ea018acb2f1322",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装消息",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "Diun",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "'8100群晖上的Docker: ' & $reverse($split(payload.image, \"/\"))[1] & '/' & $substringBefore($reverse($split(payload.image, \"/\"))[0], ':') & '有新版本发布'\t",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "'### ' & '**' & '发布平台：' & payload.provider & '**' & '\\n' &\t'### ' & '映像全称：' & payload.image & '\\n' &\t'#### ' & '**' & '更新时间：' & $fromMillis($toMillis(payload.created), '[Y0001]/[M01]/[D01] [h#1]:[m01]') & '**' & '\\n' &\t'支持架构：' & '`' & payload.platform & '`' & '\\n' &\t'唯一标识：' & '`' & payload.digest & '`' & '\\n' &\t'抓取列表：' & '`' & payload.mime_type & '`' & '\\n' &\t'Diun版本：' & '`' & payload.diun_version & '`' & '\\n\\n' &\t(\t    $contains(payload.image, \"docker.io\") ? \t    [ \t        \"在DockerHub中查看：\" & payload.hub_link\t    ]\t    :\t    [\t        {\t        }\t        &\t        {\t        }\t    ]\t)",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "$contains(payload.image, \"docker.io\") ? \t'http://192.168.5.8:8855/images/2024/12/21/Moby-logo.png'\t:\t''",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.diun_version",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.hostname",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.status",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.provider",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.image",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.hub_llink",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.mime_type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.digest",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.created",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.platform",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.metadata",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 1590,
+        "y": 1220,
+        "wires": [
+            [
+                "7fe63e67aa550bb3"
+            ]
+        ],
+        "inputLabels": [
+            "来自diun的消息"
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "4e21bcd4c329640d",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"Docker映像更新通知\",\"type\":\"成功处理\",\"sender\":\"Diun\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2380,
+        "y": 1220,
+        "wires": [
+            [
+                "2c824665afc8e161"
+            ]
+        ]
+    },
+    {
+        "id": "2c824665afc8e161",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2670,
+        "y": 1220,
+        "wires": []
+    },
+    {
+        "id": "ea028ea73834dd8a",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装消息",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "Wallos",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.subscriptioninfo.name & '订阅即将到期！！！'\t",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "'💰订阅价格：' & payload.subscriptionsinfo.payer & ' ➡️ ' & payload.subscriptioninfo.price & ' ' & payload.subscriptioninfo.currency & '\\n' &\t'📅订阅时限：' & payload.subscriptionsinfo.days & '天' & '\\n' &\t'🔖订阅类别：' & payload.subscriptionsinfo.category & '\\n' &\t'⏱️订阅日期：' & payload.subscriptionsinfo.date & '\\n' &\t'🗒️订阅备注：' & payload.subscriptionsinfo.notes & '\\n' & '\\n\\n' &\t'🔗订阅链接：' & payload.subscriptionsinfo.url\t",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "'http://192.168.5.8:8855/https://chevereto.domain.com:port/images/2024/12/22/android-chrome-512x512.png'\t",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.days_until",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.subscriptionsinfo",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.subscriptioninfo",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 1590,
+        "y": 1320,
+        "wires": [
+            [
+                "472625b84101aa5f"
+            ]
+        ],
+        "inputLabels": [
+            "来自diun的消息"
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "87bc2db9ccbc9c32",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"订阅通知\",\"type\":\"成功处理\",\"sender\":\"Wallos\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2290,
+        "y": 1320,
+        "wires": [
+            [
+                "8249f557981ed902"
+            ]
+        ]
+    },
+    {
+        "id": "8249f557981ed902",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2480,
+        "y": 1320,
+        "wires": []
+    },
+    {
+        "id": "e3a4305bd4420ee7",
+        "type": "file",
+        "z": "70644c6a954d3c15",
+        "name": "记录传入数据",
+        "filename": "/files/reNotify_log.txt",
+        "filenameType": "str",
+        "appendNewline": true,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "none",
+        "x": 810,
+        "y": 880,
+        "wires": [
+            [
+                "a72ec638f066bd8b"
+            ]
+        ]
+    },
+    {
+        "id": "a25272cce87e5ec3",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"开始下载通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2760,
+        "y": 500,
+        "wires": [
+            [
+                "e6f41680881ef343"
+            ]
+        ]
+    },
+    {
+        "id": "e6f41680881ef343",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2950,
+        "y": 500,
+        "wires": []
+    },
+    {
+        "id": "e8b18ba3b03f462f",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"订阅完成通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2760,
+        "y": 580,
+        "wires": [
+            [
+                "e165433ccea3bcbc"
+            ]
+        ]
+    },
+    {
+        "id": "e165433ccea3bcbc",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2950,
+        "y": 580,
+        "wires": []
+    },
+    {
+        "id": "edbe02b8888c659c",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "给消息打上时间戳标记",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.time",
+                "pt": "msg",
+                "to": "iso",
+                "tot": "date"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 550,
+        "y": 880,
+        "wires": [
+            [
+                "e3a4305bd4420ee7",
+                "df587b1c1c23c46a"
+            ]
+        ]
+    },
+    {
+        "id": "216f482d2e3fdd34",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装开始下载通知",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.data.context.media_info.title_year & (payload.data.context.meta_info.season_episode != '' ? ' ' & payload.data.context.meta_info.season_episode : '' ) & ' 已开始下载'",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "\"【站点】\" & payload.data.context.torrent_info.site_name & \"\\n\" &\t\"【下载器】\" & payload.data.downloader & \"\\n\" &\t\"【大小】\" & ((payload.data.context.torrent_info.size / 10000000000000 >= 1) ? ($round(payload.data.context.torrent_info.size / 1000000000000, 2) & \" TB\") : (payload.data.context.torrent_info.size / 1000000000 >= 1 ? ($round(payload.data.context.torrent_info.size / 1000000000, 2) & \" GB\") : ($round(payload.data.context.torrent_info.size / 1000000, 2) & \" MB\"))) & \"\\n\" &\t\"【质量】\" & payload.data.context.meta_info.resource_pix & \" \" & payload.data.context.meta_info.resource_type & \"\\n\" &\t\"【编码格式】\" & payload.data.context.meta_info.video_encode & \" \" & payload.data.context.meta_info.audio_encode & \"\\n\" &\t\"【做种数】\" & payload.data.context.torrent_info.seeders & \"\\n\" &\t\"【来自用户】\" & payload.data.username & \"\\n\" & \t\"【种子发布日期】\" & payload.data.context.torrent_info.pubdate & \"\\n\" &\t\"【种子】\" & payload.data.context.torrent_info.title & \"\\n\" & \t\"【描述】\" & payload.data.context.torrent_info.description & \"\\n\" &\t(payload.data.context.media_info.last_air_date = null ? \"\" : (\"【上次有新集释出】\" & payload.data.context.media_info.last_air_date) ) & \t(payload.data.context.torrent_info.labels != [] ? (\"\\n\" & \"【标签】\" & $join(payload.data.context.torrent_info.labels, \"·\")) : \"\" ) & \"\\n\\n\" &\t\"🗃️在MP中查看🗃️ \" & (payload.data.context.media_info.type = \"电影\" ? \"https://mp.domain.com:port/#/subscribe/movie\" : \"https://mp.domain.com:port/#/subscribe/tv\") & \"\\n\" &\t\"🔗在TMDB中查看🔗 \" & payload.data.context.media_info.detail_link & \"\\n\" &\t(payload.data.context.media_info.homepage = \"\" ? \"\" : (\"🌐查看影视官网🌐 \" & payload.data.context.media_info.homepage))",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.attach",
+                "pt": "msg",
+                "to": "payload.data.context.media_info.backdrop_path",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.time",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2250,
+        "y": 500,
+        "wires": [
+            [
+                "1fd2a76f700c8cdb"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "9f8a2d9bb4efb3a9",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装订阅已完成通知",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.title_year & (payload.data.mediainfo.season_episode != \"\" ? \" \" & payload.data.mediainfo.season_episode : \"\" ) & \" 已完成订阅\"",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "\"【流行度】\" & $round(payload.data.mediainfo.popularity, 2) & \"%\" & \"\\n\" &\t\"【类别】\" & payload.data.mediainfo.category & \"\\n\" &\t\"【时长】\" & (payload.data.mediainfo.episode_run_time != [] ? ((($sum(payload.data.mediainfo.episode_run_time) / 60) ~>$floor()) & \" 小时 \" & ($sum(payload.data.mediainfo.episode_run_time) % 60 & \" 分钟\")) : ((payload.data.mediainfo.runtime / 60 ~> $floor()) & \" 小时 \" & payload.data.mediainfo.runtime % 60 & \" 分钟\") ) & \"\\n\" &\t\"【评分】\" & payload.data.mediainfo.vote_average & \"\\n\" &\t\"【来自用户】\" & payload.data.subscribe_info.username  & \"\\n\\n\" &\t\"🔍在PT站中查看🔍 \" & (payload.data.mediainfo.type = \"电影\" ? \"https://mp.domain.com:port/#/subscribe/movie\" : \"https://mp.domain.com:port/#/subscribe/tv\") & \"\\n\" &\t\"🔗在TMDB中查看🔗 \" & payload.data.mediainfo.detail_link & \"\\n\" &\t(payload.data.mediainfo.homepage = \"\" ? \"\" : (\"🌐查看影视官网🌐 \" & payload.data.mediainfo.homepage))\t",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.logo_path != null ? payload.data.mediainfo.logo_path : \"https://chevereto.domain.com:port/images/2024/12/26/1000087726.png\"",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.attach",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.poster_path",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.time",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2040,
+        "y": 580,
+        "wires": [
+            [
+                "0d860fb65b52e6a3"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "80c1e711dae30beb",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装资源已入库通知",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.title_year & (payload.data.meta.season_episode != '' ? ' ' & payload.data.meta.season_episode : '' ) & ' 已入库'",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "'【评分】' & payload.data.mediainfo.vote_average & '\\n' &\t'【质量】' & payload.data.meta.resource_pix & ' ' & payload.data.meta.resource_type & '\\n' & \t'【时长】' & (payload.data.mediainfo.episode_run_time != [] ? ((($sum(payload.data.mediainfo.episode_run_time) / 60) ~>$floor()) & ' 小时 ' & ($sum(payload.data.mediainfo.episode_run_time) % 60 & ' 分钟')) : (payload.data.mediainfo.runtime = null ? '未知' :((payload.data.mediainfo.runtime / 60 ~> $floor()) & ' 小时 ' & payload.data.mediainfo.runtime % 60 & ' 分钟') )) & '\\n' &\t'【热度指数】 ' & $round(payload.data.mediainfo.popularity, 2) & '\\n' &\t'【类别】' & payload.data.mediainfo.category & '\\n' &\t'【编码格式】' & payload.data.meta.video_encode & ' ' & payload.data.meta.audio_encode & '\\n' &\t(\t    payload.data.transferinfo.success ? (\t        '【转移路径】[ ' & '\\\"' & $substringBefore(payload.data.transferinfo.fileitem.path, payload.data.transferinfo.fileitem.name) & '\\\"' & ' ➡️ ' & '\\\"' & payload.data.transferinfo.target_diritem.path & '\\\"' & ']' & ' 共 ' & payload.data.transferinfo.file_count & ' 个文件，大小：' & ((payload.data.transferinfo.total_size / 10000000000000 >= 1) ? ($round(payload.data.transferinfo.total_size / 1000000000000, 2) & ' TB') : (payload.data.transferinfo.total_size / 1000000000 >= 1 ? ($round(payload.data.transferinfo.total_size / 1000000000, 2) & ' GB') : ($round(payload.data.transferinfo.total_size / 1000000, 2) & ' MB')))\t    ) \t    :(\t        \"【转移失败】\"\t    )\t) & '\\n\\n' &\t'🎞️在Jellyfin中查看🎞️ ' & (payload.data.mediainfo.type = \"电影\" ? \"https://jellyfin.domain.com:port/web/#/movies.html?topParentId=3227ce1e069754c594af25ea66d69fc7&collectionType=movies\" : \"https://jellyfin.domain.com:port/web/#/tv.html?topParentId=58d1dacb5eba2d0fa69e005e56725895&collectionType=tvshows\") & '\\n' &\t'🔗在TMDB中查看🔗 ' & payload.data.mediainfo.detail_link & '\\n' &\t'🌐查看影视官网🌐 ' & (payload.data.mediainfo.homepage = '' ? \"该影视无官网\" : payload.data.mediainfo.homepage)",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.logo_path != null ? payload.data.mediainfo.logo_path : \"https://chevereto.domain.com:port/images/2024/12/26/1000087726.png\"",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.attach",
+                "pt": "msg",
+                "to": "payload.data.mediainfo.poster_path",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.time",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2040,
+        "y": 740,
+        "wires": [
+            [
+                "2bece92b86f7561b"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "299eaf2c0a1403de",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"成功入库通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2760,
+        "y": 740,
+        "wires": [
+            [
+                "85060aa0dc6ed265"
+            ]
+        ]
+    },
+    {
+        "id": "85060aa0dc6ed265",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2950,
+        "y": 740,
+        "wires": []
+    },
+    {
+        "id": "7eea4b4f2a61c546",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"Movie Pilot 通知转发失败\",\"type\":\"无匹配的MP事件类型\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2000,
+        "y": 1140,
+        "wires": [
+            [
+                "8a8f97002208c252"
+            ]
+        ]
+    },
+    {
+        "id": "a72ec638f066bd8b",
+        "type": "delay",
+        "z": "70644c6a954d3c15",
+        "name": "避免消息拥堵",
+        "pauseType": "delay",
+        "timeout": "1",
+        "timeoutUnits": "seconds",
+        "rate": "1",
+        "nbRateUnits": "1",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": false,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 1050,
+        "y": 880,
+        "wires": [
+            [
+                "344db5458c011fd5"
+            ]
+        ]
+    },
+    {
+        "id": "3651c102e8f3bf88",
+        "type": "inject",
+        "z": "70644c6a954d3c15",
+        "d": true,
+        "name": "测试用，直接注入payload即可",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "json",
+        "x": 1010,
+        "y": 800,
+        "wires": [
+            [
+                "344db5458c011fd5",
+                "c60fedd2d15fb453"
+            ]
+        ]
+    },
+    {
+        "id": "20f64453baa2df0b",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"无匹配的RSS主题\",\"type\":\"转发失败\",\"sender\":\"RSSPush\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2760,
+        "y": 300,
+        "wires": [
+            [
+                "11445ffbe44dca62"
+            ]
+        ]
+    },
+    {
+        "id": "11445ffbe44dca62",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发失败",
+        "statusCode": "400",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2950,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "6be35ffa6ff21fa2",
+        "type": "switch",
+        "z": "70644c6a954d3c15",
+        "name": "判断是何种RSS主题",
+        "property": "payload.feed.title",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "jsonata_exp",
+                "v": "($contains(msg.payload.feed.title, \"临时工\") and $contains(msg.payload.feed.title, \"其乐\"))\t",
+                "vt": "jsonata"
+            },
+            {
+                "t": "cont",
+                "v": "PT风向旗",
+                "vt": "str"
+            },
+            {
+                "t": "cont",
+                "v": "直播间开播",
+                "vt": "str"
+            },
+            {
+                "t": "cont",
+                "v": "Spotify",
+                "vt": "str"
+            },
+            {
+                "t": "cont",
+                "v": "Github Realeases",
+                "vt": "str"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 6,
+        "x": 1610,
+        "y": 180,
+        "wires": [
+            [
+                "e2db4a40942f4fa3"
+            ],
+            [
+                "204c397db96db214"
+            ],
+            [
+                "4ed21332c4b9376c"
+            ],
+            [
+                "91ae2f1755ef882e"
+            ],
+            [
+                "5aef913391b58444"
+            ],
+            [
+                "20f64453baa2df0b"
+            ]
+        ]
+    },
+    {
+        "id": "4b91d1d87fb23f38",
+        "type": "function",
+        "z": "70644c6a954d3c15",
+        "name": "循环处理每条新RSS消息",
+        "func": "// 定义重新包装后的JSON\nconst packaged_msg = {\n    \"payload\": {\n        // 定义是否处理完RSS队列中所有RSS的标志 \n        \"task_done\": false,\n        \"group\": \"RSS\",\n        \"title\": \"未知RSS消息\", \n        \"action\": \"none\"\n    }\n};\n\nswitch(msg.payload.type){\n    case 1: \n        packaged_msg.payload.title = \"🎉 其乐Keylol上有新的临时工消息 ！！！\";\n        packaged_msg.payload.icon = \"https://keylol.com/template/steamcn_metro/src/img/common/icon_with_text_256h.png\";\n        break;\n    case 2: \n        packaged_msg.payload.title = \"⛓️ PT站点有新的动态 ！！！\";\n        packaged_msg.payload.icon = \"https://chevereto.domain.com:port/images/2024/12/25/R-C.png\";\n        break;\n    case 3: \n        packaged_msg.payload.title = \"📺 \" + msg.payload.feed.title.split(\"直播间\")[0] + \"开播了 ！！！\";\n        packaged_msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/01/20/6f8f7c8cc03f5a68028fddb3f8c74ac1.png\";\n        break;\n    case 4: \n        packaged_msg.payload.title = \"🎶 \";\n        packaged_msg.payload.icon = \"\";\n        break;\n    case 5: \n        packaged_msg.payload.title = \"🔄\";\n        packaged_msg.payload.icon = \"\";\n        break;\n\n    default: break;\n};\n\n// 调用初始化函数中定义的格式化时间戳函数\nconst formatTimestamp = global.get(\"formatTimestamp\");\n\n// 顺序处理异步队列消息函数，延迟1秒\nfunction processItem(index, entries, packaged_msg) {\n    return new Promise((resolve, reject) => {\n        // 模拟异步操作（例如 setTimeout）\n        setTimeout(function() {\n            try {\n                // 处理数组的当前项\n                packaged_msg.payload.body = (\n                    // 设置标题并去掉标题中的时间戳\n                    \"标题：\" + global.get(\"removeTimestamp\")(entries[index].title) + \"\\n\" +\n                    // 使用获取的函数格式化时间戳\n                    \"发布时间：\" + formatTimestamp(entries[index].published_at) + \"\\n\" +\n                    \"阅读时间：\" + entries[index].reading_time + \" 分钟\" + \"\\n\" +\n                    \"🔍查看详情🔍 \" + entries[index].url \n                );\n\n                // 根据Spotify不同艺人执行不同的操作\n                if (entries[index].title.includes(\"Anson Seabra\")) {\n                    // 执行操作1\n                    packaged_msg.payload.title = \"🎶 Anson Seabra 刚刚发布了新专辑 ！！！\";\n                    packaged_msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/01/20/1c2f75aef88029fda496b38f0b1e6bbe.jpg\";\n                    // 在这里添加操作1的代码\n                } else if (entries[index].title.includes(\"Hayd\")) {\n                    // 执行操作2\n                    packaged_msg.payload.title = \"🎶 Hayd 刚刚发布了新专辑 ！！！\";\n                    packaged_msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/01/20/73d4f0fc0a3a396a89341d35b258dc80.jpg\";\n                    // 在这里添加操作2的代码\n                }\n\n                // 按顺序发送消息\n                node.send(packaged_msg); \n\n                // 如果还没有处理完所有项，继续处理下一个\n                if (index < entries.length - 1) {\n                    // 递归调用，返回 Promise 保证顺序\n                    processItem(index + 1, entries, packaged_msg)\n                        .then(resolve)\n                        .catch(reject);\n                } else {\n                    // 已处理完所有元素，返回完成的消息\n                    resolve(\"已处理完所有数组元素\");\n                }\n            } catch (error) {\n                reject(error);\n            }\n        }, 500);  // 延迟0.5秒模拟异步操作\n    });\n};\n\nconst beginIndex = 0;\nprocessItem(beginIndex, msg.payload.entries, packaged_msg);\n\n// RSS队列中所有消息处理完后，更改处理标记为已完成\nmsg.payload.task_done = true\nreturn msg;",
+        "outputs": 1,
+        "timeout": "0",
+        "noerr": 0,
+        "initialize": "// 部署节点后，此处添加的代码将运行一次。 \n// 定义格式化时间戳函数，取自ChatGPT\n// 初始化函数中定义格式化函数并存储到 global 上下文中\nglobal.set(\"formatTimestamp\", function (timestamp) {\n    const date = new Date(timestamp);\n\n    // 获取各部分时间\n    const year = date.getFullYear();\n    const month = String(date.getMonth() + 1).padStart(2, '0'); // 月份从 0 开始，需要加 1\n    const day = String(date.getDate()).padStart(2, '0');\n    const hour = String(date.getHours()).padStart(2, '0'); // 24 小时制\n    const minute = String(date.getMinutes()).padStart(2, '0');\n    const second = String(date.getSeconds()).padStart(2, '0');\n\n    // 格式化为 \"某年某月某日某时某分某秒\" 的形式\n    return `${year} 年 ${month} 月 ${day} 日 ${hour} 时 ${minute} 分 ${second} 秒 `;\n});\n// console.log(formatTimestampWithPadding(timestamp));\n// 输出：2025年01月19日06时53分54秒\n\n\n// 格式化BiliBili直播RSS消息的标题\nglobal.set(\"removeTimestamp\", function (inputString) {\n    // 使用正则表达式匹配日期时间格式 YYYY-MM-DD HH:MM:SS\n    const regex = /\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/;\n\n    // 使用正则表达式替换掉时间部分\n    const resultString = inputString.replace(regex, '').trim();  // `trim()` 用于去掉末尾的多余空格\n\n    return resultString;\n});\n",
+        "finalize": "",
+        "libs": [],
+        "x": 2320,
+        "y": 80,
+        "wires": [
+            [
+                "52845f5627630391"
+            ]
+        ]
+    },
+    {
+        "id": "52845f5627630391",
+        "type": "switch",
+        "z": "70644c6a954d3c15",
+        "name": "",
+        "property": "payload.task_done",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "false"
+            },
+            {
+                "t": "true"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 2560,
+        "y": 80,
+        "wires": [
+            [
+                "e119491c7c212e6b"
+            ],
+            [
+                "259f7ca5194a287e"
+            ]
+        ],
+        "outputLabels": [
+            "循环处理RSS队列消息",
+            "处理完成，发送响应"
+        ]
+    },
+    {
+        "id": "e2db4a40942f4fa3",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "设定RSS消息类型",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.type",
+                "pt": "msg",
+                "to": "1",
+                "tot": "num"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2020,
+        "y": 20,
+        "wires": [
+            [
+                "4b91d1d87fb23f38"
+            ]
+        ]
+    },
+    {
+        "id": "204c397db96db214",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "设定RSS消息类型",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.type",
+                "pt": "msg",
+                "to": "2",
+                "tot": "num"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2020,
+        "y": 60,
+        "wires": [
+            [
+                "4b91d1d87fb23f38"
+            ]
+        ]
+    },
+    {
+        "id": "4ed21332c4b9376c",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "设定RSS消息类型",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.type",
+                "pt": "msg",
+                "to": "3",
+                "tot": "num"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2020,
+        "y": 100,
+        "wires": [
+            [
+                "4b91d1d87fb23f38"
+            ]
+        ]
+    },
+    {
+        "id": "259f7ca5194a287e",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"RSS消息\",\"type\":\"成功处理\",\"sender\":\"RSSPush\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2760,
+        "y": 140,
+        "wires": [
+            [
+                "321523ca3ece5043"
+            ]
+        ]
+    },
+    {
+        "id": "321523ca3ece5043",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "所有RSS消息转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 3030,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "e119491c7c212e6b",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "RSS消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2790,
+        "y": 60,
+        "wires": [
+            [
+                "8803a7449d2e2548"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "91ae2f1755ef882e",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "设定RSS消息类型",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.type",
+                "pt": "msg",
+                "to": "4",
+                "tot": "num"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2020,
+        "y": 140,
+        "wires": [
+            [
+                "4b91d1d87fb23f38"
+            ]
+        ]
+    },
+    {
+        "id": "64f49b1a8dcb75a9",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装站点相关通知",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "'站点 ' & $split(payload.data.title, ' ')[1] & ' 有新私信 ✉️'",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "'【标题】' & $substringAfter($split(payload.data.text, \"\\n\")[1], \"：\") & '\\n' &\t'【内容】' & $substringAfter($split(payload.data.text, \"\\n\")[3], \"\") & '\\n' &\t'【时间】' & $substringAfter($split(payload.data.text, \"\\n\")[0], \"：\") & '。' & '\\n\\n' &\t'🔍在PT站中查看🔍 ' & payload.data.link",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.time",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2490,
+        "y": 980,
+        "wires": [
+            [
+                "692793a29ed78b55"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "64333fe9df85a94c",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"站点消息通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 3060,
+        "y": 980,
+        "wires": [
+            [
+                "aaae64c5c54e1019"
+            ]
+        ]
+    },
+    {
+        "id": "aaae64c5c54e1019",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 3250,
+        "y": 980,
+        "wires": []
+    },
+    {
+        "id": "a9fb27824cf7d666",
+        "type": "function",
+        "z": "70644c6a954d3c15",
+        "name": "根据站点设置图标",
+        "func": "const msg_title = msg.payload.data.title\nconst msg_site = msg.payload.data.text.split(\"\\n\")[0]\n\nif (msg_title.includes(\"北洋园\") | msg_site.includes(\"北洋园\")){\n        msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/03/01/985f73f7898f28c42201151559e10fb5.png\";\n}\nelse if (msg_title.includes(\"馒头\") | msg_site.includes(\"馒头\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/03/01/c8085e47cf06fe5bcb41e86426ec2cd1.png\";\n}\nelse if (msg_title.includes(\"冰淇淋\") | msg_site.includes(\"冰淇淋\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/03/01/5e6663d8be3167313ae9676b2d439425.png\";\n}\nelse if (msg_title.includes(\"憨憨\") | msg_site.includes(\"憨憨\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/08/25/9c6965c808bfdaad3f7cec98bf2bb715.png\";\n}\nelse if (msg_title.includes(\"北邮人\") | msg_site.includes(\"北邮人\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/01/6e30431280189e9bd2e4284bf7670c26.png\";\n}\nelse if (msg_title.includes(\"财神\") | msg_site.includes(\"财神\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/05/3fefb3e630db17efae0584185eba11a3.png\";\n}\nelse if (msg_title.includes(\"红豆饭\") | msg_site.includes(\"红豆饭\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/05/6c659ca7368e3ff4437c8797a32ada31.png\";\n}\nelse if (msg_title.includes(\"CARPT\") | msg_site.includes(\"CARPT\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/05/3c5cfe849c657100ad30607a231b1b0f.png\";\n}\nelse if (msg_title.includes(\"AGSVPT\") | msg_site.includes(\"AGSVPT\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/05/fe0be8c0efc5eaeae40105d0bb32e5f0.png\";\n}\nelse if (msg_title.includes(\"青蛙\") | msg_site.includes(\"青蛙\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/10/a43d1f6b2887ab507fb803827f25456a.png\";\n}\nelse if (msg_title.includes(\"猫站\") | msg_site.includes(\"猫站\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2026/01/18/12beb96088698c8663573bc5a13e46db.png\";\n}\nelse if (msg_title.includes(\"PTS\") | msg_site.includes(\"PTS\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2026/01/18/512a67decab596115e6d2d74b692a4cf.png\";\n}\nelse {\n    \n}\n    \nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2020,
+        "y": 940,
+        "wires": [
+            [
+                "92834e35f5bbb81d",
+                "6d857d6890eebe54"
+            ]
+        ]
+    },
+    {
+        "id": "229c22b6f51a65ff",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"订阅修改通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2760,
+        "y": 660,
+        "wires": [
+            [
+                "bff21629d1c35c6e"
+            ]
+        ]
+    },
+    {
+        "id": "bff21629d1c35c6e",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2950,
+        "y": 660,
+        "wires": []
+    },
+    {
+        "id": "1b656cc8fd063fdc",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装订阅已修改通知",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.data.old_subscribe_info.name & ' 订阅已修改'",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "\"该订阅已修改\" & '\\n\\n' &\t\"🔍在PT站中查看🔍 \" & (payload.data.mediainfo.type = \"电影\" ? \"https://mp.domain.com:port/#/subscribe/movie\" : \"https://mp.domain.com:port/#/subscribe/tv\")",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "https://chevereto.domain.com:port/images/2024/12/26/1000087726.png",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.attach",
+                "pt": "msg",
+                "to": "payload.data.old_subscribe_info.poster",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.time",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2040,
+        "y": 660,
+        "wires": [
+            [
+                "a297f6041ea73013"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "193c0e0d033d2fbb",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"订阅删除通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2760,
+        "y": 820,
+        "wires": [
+            [
+                "a513aa7a4418c742"
+            ]
+        ]
+    },
+    {
+        "id": "a513aa7a4418c742",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2950,
+        "y": 820,
+        "wires": []
+    },
+    {
+        "id": "22ba0c83f539b6f4",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装订阅已删除通知",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "payload.data.subscribe_info.name & ' 订阅已删除'",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "\"该订阅已删除\" & \"\\n\\n\" &\t\"🔍在MP中查看🔍 \" & (payload.data.subscribe_info.type = \"电影\" ? \"https://mp.domain.com:port/#/subscribe/movie\" : \"https://mp.domain.com:port/#/subscribe/tv\")",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.icon",
+                "pt": "msg",
+                "to": "https://chevereto.domain.com:port/images/2024/12/26/1000087726.png",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.attach",
+                "pt": "msg",
+                "to": "payload.data.subscribe_info.poster",
+                "tot": "jsonata"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.time",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2040,
+        "y": 820,
+        "wires": [
+            [
+                "999f379256611a9f"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "e772457ebce62cdf",
+        "type": "function",
+        "z": "70644c6a954d3c15",
+        "name": "循环处理Grafana警报通知",
+        "func": "// 定义重新包装后的JSON\nconst packaged_msg = {\n    \"payload\": {\n        // 定义是否处理完RSS队列中所有RSS的标志 \n        \"task_done\": false,\n        \"group\": \"Grafana\",\n        \"title\": \"未知Grafana通知\",\n        \"action\": \"none\"\n    }\n};\n\n// 调用初始化函数中定义的格式化时间戳函数\nconst formatTimestamp = global.get(\"formatTimestamp\");\n\n// 顺序处理异步队列消息函数，延迟1秒\nfunction processItem(index, entries, packaged_msg) {\n    return new Promise((resolve, reject) => {\n        // 模拟异步操作（例如 setTimeout）\n        setTimeout(function() {\n            try {\n                // 处理数组的当前项\n                packaged_msg.payload.title = entries[index].labels.alertname\n                packaged_msg.payload.body = (\n                    \"异常详情：\" + entries[index].annotations.detail + \"\\n\" +\n                    \"报警时间：\" + formatTimestamp(entries[index].startsAt) + \"\\n\\n\" +\n                    \"🛑关闭报警🛑\" + entries[index].silenceURL + \"\\n\" +\n                    \"🔍在Grafana中查看🔍\" + entries[index].dashboardURL + \"\\n\" +\n                    \"📊查看机器整体运行状态📊\" + entries[index].panelURL\n                );\n\n                // 根据报警来源设置图标\n                switch(entries[index].labels.grafana_folder){\n                    case \"ImmortalWRT\": \n                        packaged_msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/03/11/01e3f0451bf510195b7b57041546f2ea.png\";\n                        break;\n                    case \"Synology NAS\": \n                        packaged_msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/01/12/synology.png\";\n                        break;\n                    default: break;\n                };\n\n                // 根据报警状态设置通知优先级\n                switch(entries[index].status){\n                    case \"firing\": \n                        packaged_msg.payload.level = \"critical\";\n                        break;\n                    case \"normal\": \n                        packaged_msg.payload.level = \"active\";\n                        break\n                    case \"pending\":\n                        packaged_msg.payload.level = \"passive\";                    \n                        break;\n                    default: break;\n                };\n\n                // 按顺序发送消息\n                node.send(packaged_msg); \n\n                // 如果还没有处理完所有项，继续处理下一个\n                if (index < entries.length - 1) {\n                    // 递归调用，返回 Promise 保证顺序\n                    processItem(index + 1, entries, packaged_msg)\n                        .then(resolve)\n                        .catch(reject);\n                } else {\n                    // 已处理完所有元素，返回完成的消息\n                    resolve(\"已处理完所有数组元素\");\n                }\n            } catch (error) {\n                reject(error);\n            }\n        }, 500);  // 延迟0.5秒模拟异步操作\n    });\n};\n\nconst beginIndex = 0;\nprocessItem(beginIndex, msg.payload.alerts, packaged_msg);\n\n// RSS队列中所有消息处理完后，更改处理标记为已完成\nmsg.payload.task_done = true\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1620,
+        "y": 1480,
+        "wires": [
+            [
+                "9b673294d6c8d76e"
+            ]
+        ]
+    },
+    {
+        "id": "e02b4217632ca631",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"系统异常通知\",\"type\":\"成功处理\",\"sender\":\"Grafana\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2680,
+        "y": 1500,
+        "wires": [
+            [
+                "cb804ff6f3c43995"
+            ]
+        ]
+    },
+    {
+        "id": "cb804ff6f3c43995",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2870,
+        "y": 1500,
+        "wires": []
+    },
+    {
+        "id": "9b673294d6c8d76e",
+        "type": "switch",
+        "z": "70644c6a954d3c15",
+        "name": "",
+        "property": "payload.task_done",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "false"
+            },
+            {
+                "t": "true"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 1980,
+        "y": 1480,
+        "wires": [
+            [
+                "c1a3949825987b24"
+            ],
+            [
+                "e02b4217632ca631"
+            ]
+        ],
+        "outputLabels": [
+            "循环处理RSS队列消息",
+            "处理完成，发送响应"
+        ]
+    },
+    {
+        "id": "6d857d6890eebe54",
+        "type": "debug",
+        "z": "70644c6a954d3c15",
+        "name": "debug 2",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 2210,
+        "y": 1000,
+        "wires": []
+    },
+    {
+        "id": "c056d043d4c81d47",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2510,
+        "y": 420,
+        "wires": [
+            [
+                "182cd311c5e48e07"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "1fd2a76f700c8cdb",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2510,
+        "y": 500,
+        "wires": [
+            [
+                "a25272cce87e5ec3"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "0d860fb65b52e6a3",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2510,
+        "y": 580,
+        "wires": [
+            [
+                "e8b18ba3b03f462f"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "a297f6041ea73013",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2510,
+        "y": 660,
+        "wires": [
+            [
+                "229c22b6f51a65ff"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "2bece92b86f7561b",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2510,
+        "y": 740,
+        "wires": [
+            [
+                "299eaf2c0a1403de"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "999f379256611a9f",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2510,
+        "y": 820,
+        "wires": [
+            [
+                "193c0e0d033d2fbb"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "692793a29ed78b55",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2810,
+        "y": 980,
+        "wires": [
+            [
+                "64333fe9df85a94c"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "6f53fa74e06b12a1",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "单个RSS消息转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 3230,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "8803a7449d2e2548",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"订阅添加通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 3000,
+        "y": 60,
+        "wires": [
+            [
+                "6f53fa74e06b12a1"
+            ]
+        ]
+    },
+    {
+        "id": "7fe63e67aa550bb3",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2050,
+        "y": 1220,
+        "wires": [
+            [
+                "4e21bcd4c329640d"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "472625b84101aa5f",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2040,
+        "y": 1320,
+        "wires": [
+            [
+                "87bc2db9ccbc9c32"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "c1a3949825987b24",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "RSS消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2410,
+        "y": 1460,
+        "wires": [
+            [
+                "44cc01883e4936bf"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "254aca3a0d9c0030",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "单个RSS消息转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 2910,
+        "y": 1460,
+        "wires": []
+    },
+    {
+        "id": "44cc01883e4936bf",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"订阅添加通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2680,
+        "y": 1460,
+        "wires": [
+            [
+                "254aca3a0d9c0030"
+            ]
+        ]
+    },
+    {
+        "id": "92834e35f5bbb81d",
+        "type": "switch",
+        "z": "70644c6a954d3c15",
+        "name": "判断MP消息事件类型",
+        "property": "payload.data.title",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "cont",
+                "v": "刷流",
+                "vt": "str"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 2250,
+        "y": 940,
+        "wires": [
+            [
+                "591ca5259afa1d3a"
+            ],
+            [
+                "64f49b1a8dcb75a9"
+            ]
+        ],
+        "outputLabels": [
+            "订阅已添加",
+            "无匹配的MP事件类型"
+        ]
+    },
+    {
+        "id": "591ca5259afa1d3a",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "重新包装刷流插件相关通知",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.group",
+                "pt": "msg",
+                "to": "MoviePilot",
+                "tot": "str"
+            },
+            {
+                "t": "set",
+                "p": "payload.title",
+                "pt": "msg",
+                "to": "$replace($replace(msg.payload.data.title, \"【\", \"\"), \"】\", \"\")",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.body",
+                "pt": "msg",
+                "to": "\"【刷流站点】\" & $substringAfter($split(payload.data.text, \"\\n\")[0], \"：\") & \"\\n\" &\t\"【相关种子】\" & $substringAfter($split(payload.data.text, \"\\n\")[1], \"：\") & \"\\n\" &\t($contains(payload.data.title, \"种子下载\") ? \"【种子体积】\" : \"【变动原因】\") &\t$substringAfter($split(payload.data.text, \"\\n\")[3], \"：\") & \"\\n\\n\" &\t\"🗃️在MP中查看🗃️ \" & \"https://mp.domain.com:port/api/v1/system/logging?length=-1&logfile=plugins/webhook.log\"",
+                "tot": "jsonata"
+            },
+            {
+                "t": "set",
+                "p": "payload.action",
+                "pt": "msg",
+                "to": "none",
+                "tot": "str"
+            },
+            {
+                "t": "delete",
+                "p": "payload.data",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.type",
+                "pt": "msg"
+            },
+            {
+                "t": "delete",
+                "p": "payload.time",
+                "pt": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2510,
+        "y": 900,
+        "wires": [
+            [
+                "fc6121c876b57d28"
+            ]
+        ],
+        "info": "这里测试时不能加payload.\r\n但是实际使用时需要加，因为实际传入的msg才是根目录，而不是msg.payload\r\n长的逻辑表达式之间也需要用&连接\r\n\r\naction中用到了判断，判定该影视是否存在官网，如果有的话加上相应的按钮"
+    },
+    {
+        "id": "8f135be4d56c74a8",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "编辑响应体",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"title\":\"站点消息通知\",\"type\":\"成功处理\",\"sender\":\"MP Webhook\",\"destination\":\"Self-Hosted Bark\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 3060,
+        "y": 900,
+        "wires": [
+            [
+                "b7f0d55848c432b4"
+            ]
+        ]
+    },
+    {
+        "id": "b7f0d55848c432b4",
+        "type": "http response",
+        "z": "70644c6a954d3c15",
+        "name": "转发完成",
+        "statusCode": "200",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 3250,
+        "y": 900,
+        "wires": []
+    },
+    {
+        "id": "fc6121c876b57d28",
+        "type": "http request",
+        "z": "70644c6a954d3c15",
+        "name": "将打包好的消息转发到Bark",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "http://192.168.5.25:2311/65GnvB5VzTABzfzmTK9Dg5",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "",
+                "valueType": "application/json",
+                "valueValue": ""
+            }
+        ],
+        "x": 2810,
+        "y": 900,
+        "wires": [
+            [
+                "8f135be4d56c74a8"
+            ]
+        ],
+        "inputLabels": [
+            "来源为RSSPush"
+        ],
+        "info": "消息比较简单，用Webhook方式重新转发到ntfy"
+    },
+    {
+        "id": "1bb420ea872f8ebe",
+        "type": "function",
+        "z": "70644c6a954d3c15",
+        "name": "根据站点设置图标",
+        "func": "const msg_site = msg.payload.data.context.torrent_info.site_name\n\nif (msg_site.includes(\"北洋园\")){\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/03/01/985f73f7898f28c42201151559e10fb5.png\";\n}\nelse if (msg_site.includes(\"馒头\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/03/01/c8085e47cf06fe5bcb41e86426ec2cd1.png\";\n}\nelse if (msg_site.includes(\"冰淇淋\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/03/01/5e6663d8be3167313ae9676b2d439425.png\";\n}\nelse if (msg_site.includes(\"憨憨\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/08/25/9c6965c808bfdaad3f7cec98bf2bb715.png\";\n}\nelse if (msg_site.includes(\"北邮人\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/01/6e30431280189e9bd2e4284bf7670c26.png\";\n}\nelse if (msg_site.includes(\"财神\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/05/3fefb3e630db17efae0584185eba11a3.png\";\n}\nelse if (msg_site.includes(\"红豆饭\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/05/6c659ca7368e3ff4437c8797a32ada31.png\";\n}\nelse if (msg_site.includes(\"CARPT\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/05/3c5cfe849c657100ad30607a231b1b0f.png\";\n}\nelse if (msg_site.includes(\"AGSVPT\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/05/fe0be8c0efc5eaeae40105d0bb32e5f0.png\";\n}\nelse if (msg_site.includes(\"青蛙\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2025/06/10/a43d1f6b2887ab507fb803827f25456a.png\";\n}\nelse if (msg_site.includes(\"猫站\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2026/01/18/12beb96088698c8663573bc5a13e46db.png\";\n}\nelse if (msg_site.includes(\"PTS\")) {\n    msg.payload.icon = \"https://chevereto.domain.com:port/images/2026/01/18/512a67decab596115e6d2d74b692a4cf.png\";\n}\nelse{\n}\n    \nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2020,
+        "y": 500,
+        "wires": [
+            [
+                "216f482d2e3fdd34"
+            ]
+        ]
+    },
+    {
+        "id": "5aef913391b58444",
+        "type": "change",
+        "z": "70644c6a954d3c15",
+        "name": "设定RSS消息类型",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.type",
+                "pt": "msg",
+                "to": "5",
+                "tot": "num"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 2020,
+        "y": 180,
+        "wires": [
+            [
+                "4b91d1d87fb23f38"
+            ]
+        ]
+    },
+    {
+        "id": "d43b3ff2536f85ac",
+        "type": "debug",
+        "z": "70644c6a954d3c15",
+        "name": "debug 3",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1710,
+        "y": 1100,
+        "wires": []
+    },
+    {
+        "id": "c60fedd2d15fb453",
+        "type": "debug",
+        "z": "70644c6a954d3c15",
+        "name": "debug 4",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1300,
+        "y": 700,
+        "wires": []
+    }
+]
