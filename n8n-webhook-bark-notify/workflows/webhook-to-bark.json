@@ -1,0 +1,702 @@
+{
+  "name": "Webhook 通知转发到 Bark（多源聚合与去重版）",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "renotify",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "d1eb3d14-b767-42e4-b7e6-ed595aaea514",
+      "name": "Webhook - /renotify",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        540
+      ],
+      "webhookId": "renotify-webhook-template-id"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 准备请求\n * - Webhook body 归一化（兼容 body 直接在顶层）\n * - Miniflux save_entry 归一化为普通 RSS 事件（在网页里点“保存文章”即可当测试按钮）\n * - 可选写文件日志（LOG_PATH 留空则关闭）\n * - 判断来源 kind，交给后面的「解析 - *」节点\n */\n\n// ======================= 可调参数 =======================\n// 文件日志：留空则关闭；开启需在 n8n 环境变量里设置 NODE_FUNCTION_ALLOW_BUILTIN=fs\nconst LOG_PATH = \"\"; // 例如 \"/home/node/.n8n/reNotify_log.txt\"\nconst LOG_MAX_BYTES = 5 * 1024 * 1024; // 日志超过该字节数即触发清理（默认 5 MB）\nconst LOG_KEEP_RATIO = 0.8; // 清理时保留最近内容的比例（0.8 = 约保留 80%）\n// =======================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\n\n// 日志清理：超过 LOG_MAX_BYTES 时只保留尾部 LOG_KEEP_RATIO 比例的内容\nfunction rotateLog(fs, size) {\n    if (!(LOG_MAX_BYTES > 0) || size <= LOG_MAX_BYTES) return;\n    const ratio = LOG_KEEP_RATIO > 0 && LOG_KEEP_RATIO < 1 ? LOG_KEEP_RATIO : 0.8;\n    const keepBytes = Math.max(0, Math.floor(LOG_MAX_BYTES * ratio));\n    const start = Math.max(0, size - keepBytes);\n    const length = size - start;\n    const fd = fs.openSync(LOG_PATH, \"r\");\n    let tail;\n    try {\n        tail = Buffer.alloc(length);\n        fs.readSync(fd, tail, 0, length, start);\n    } finally {\n        fs.closeSync(fd);\n    }\n    // 丢掉可能被截断的第一行，保证日志始终是完整的 JSON 行\n    const firstNewline = tail.indexOf(0x0a);\n    const cut = firstNewline === -1 ? tail.length : firstNewline + 1;\n    const tmpPath = `${LOG_PATH}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 6)}`;\n    try {\n        fs.writeFileSync(tmpPath, tail.subarray(cut));\n        fs.renameSync(tmpPath, LOG_PATH);\n    } catch (err) {\n        try { fs.unlinkSync(tmpPath); } catch (_) {}\n        throw err;\n    }\n}\n\nfunction maybeLog(payload) {\n    if (!LOG_PATH || typeof require !== \"function\") return;\n    try {\n        const fs = require(\"fs\");\n        const dir = LOG_PATH.replace(/[\\\\/][^\\\\/]*$/, \"\");\n        if (dir) fs.mkdirSync(dir, { recursive: true });\n        try {\n            const stat = fs.statSync(LOG_PATH);\n            if (stat.isFile()) rotateLog(fs, stat.size);\n        } catch (e) {\n            // 文件还不存在：首次写入\n        }\n        fs.appendFileSync(LOG_PATH, JSON.stringify(payload) + \"\\n\");\n    } catch (e) {\n        // 日志失败不影响转发\n    }\n}\n\nconst input = $input.first().json || {};\nlet payload = input.body !== undefined ? input.body : input;\nif (typeof payload === \"string\") {\n    try {\n        payload = JSON.parse(payload);\n    } catch (e) {\n        payload = {};\n    }\n}\nif (!payload || typeof payload !== \"object\" || Array.isArray(payload)) payload = {};\n\nconst isSaveTest = payload.event_type === \"save_entry\" && payload.entry;\nif (isSaveTest) {\n    payload = {\n        event_type: \"save_entry\",\n        __test: true,\n        feed: payload.entry.feed || {},\n        entries: [payload.entry]\n    };\n}\n\nmaybeLog(payload);\n\n// 来源识别：顺序与旧版保持一致\nconst type = str(payload.type);\nconst detectKind = () => {\n    if (isSaveTest || \"feed\" in payload) return \"rss\";\n    if (\"data\" in payload) {\n        if (type.startsWith(\"subscribe.\")) return \"mp-subscribe\";\n        if (type === \"download.added\" || type === \"transfer.complete\") return \"mp-download\";\n        if (type === \"plugin.triggered\") return \"mp-plugin\";\n        if (type === \"notice.message\") return \"mp-notice\";\n        return \"mp-unknown\";\n    }\n    if (\"diun_version\" in payload) return \"diun\";\n    if (payload.days_until !== undefined) return \"wallos\";\n    if (\"alerts\" in payload) return \"grafana\";\n    if (\"zerobyte_title\" in payload) return \"zerobyte\";\n    if (\"title\" in payload && \"message\" in payload && (\"timestamp\" in payload || \"time\" in payload)) return \"dockhand\";\n    return \"unknown\";\n};\n\nreturn [{ json: { kind: detectKind(), payload } }];\n"
+      },
+      "id": "c89eccb9-5c1c-4874-ad37-56c27835fb92",
+      "name": "准备请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 解析 - RSS / Miniflux\n * 支持：其乐（临时工 / 购物心得等其它板块）、PT风向旗、直播间开播、Spotify 新专辑/新单曲、GitHub Releases，\n *       以及兜底的通用 RSS（FORWARD_UNKNOWN_RSS）\n * 输入：准备请求输出的 { kind, payload }\n * 输出：每个条目一条 Bark 消息\n */\n\n// ======================= 可配置图标 =======================\n// 其乐 Keylol 图标（临时工 / 购物心得等所有其乐板块共用）\nconst KEYLOL_ICON = \"https://keylol.com/template/steamcn_metro/src/img/common/icon_with_text_256h.png\";\n// PT风向旗（Telegram 频道）图标\nconst PT_CHANNEL_ICON = \"\"; // 可选：填入自定义 PT 频道图标 URL\n// 直播间开播提醒图标（B站 / 斗鱼 / 虎牙等）\nconst LIVE_STREAM_ICON = \"\"; // 可选：填入自定义直播开播图标 URL\n// Spotify 艺人专属头像（键名用小写；新增艺人直接追加，未配置时仍会正常推送标题）\nconst SPOTIFY_ARTIST_ICONS = {\n  // 可选：按艺人名（小写）配置专属封面图标，例如：\n  // \"artist name\": \"https://your-image-host.example.com/icons/artist.jpg\"\n};\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nlet testMode = false;\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    return payload;\n};\nconst fail = (reason, source) => [{ json: { unmatched: true, reason, source } }];\n\n// 时间统一按 UTC+8 显示，不依赖 n8n 容器的 TZ 设置\nconst formatTimestamp = (value) => {\n    const text = str(value).trim();\n    if (!text) return \"\";\n    const d = new Date(text);\n    if (Number.isNaN(d.getTime())) return text;\n    const hasZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(text);\n    const t = hasZone ? new Date(d.getTime() + 8 * 3600 * 1000) : d;\n    const year = hasZone ? t.getUTCFullYear() : t.getFullYear();\n    const month = hasZone ? t.getUTCMonth() + 1 : t.getMonth() + 1;\n    const day = hasZone ? t.getUTCDate() : t.getDate();\n    const hour = hasZone ? t.getUTCHours() : t.getHours();\n    const minute = hasZone ? t.getUTCMinutes() : t.getMinutes();\n    const second = hasZone ? t.getUTCSeconds() : t.getSeconds();\n    const p = (n) => String(n).padStart(2, \"0\");\n    return `${year} 年 ${p(month)} 月 ${p(day)} 日 ${p(hour)} 时 ${p(minute)} 分 ${p(second)} 秒`;\n};\nconst removeTimestamp = (value) =>\n    str(value).replace(/\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/, \"\").trim();\n\n// 统一展示格式：空值用 —，阅读时间带单位\nconst DASH = \"—\";\nconst val = (value) => {\n    const s = str(value).trim();\n    return s || DASH;\n};\nconst readingText = (value) => {\n    const s = str(value).trim();\n    return s ? `${s} 分钟` : DASH;\n};\n\n// HTML 实体解码与标签清理（用于解析 Spotify 等带 HTML 实体的正文）\nconst decodeHtml = (value) =>\n    str(value)\n        .replace(/<[^>]+>/g, \" \")\n        .replace(/&#x([0-9a-f]+);/gi, (m, hex) => {\n            const code = parseInt(hex, 16);\n            return Number.isNaN(code) ? m : String.fromCodePoint(code);\n        })\n        .replace(/&#(\\d+);/g, (m, dec) => {\n            const code = parseInt(dec, 10);\n            return Number.isNaN(code) ? m : String.fromCodePoint(code);\n        })\n        .replace(/&quot;/gi, '\"')\n        .replace(/&apos;/gi, \"'\")\n        .replace(/&lt;/gi, \"<\")\n        .replace(/&gt;/gi, \">\")\n        .replace(/&nbsp;/gi, \" \")\n        .replace(/&amp;/gi, \"&\")\n        .replace(/\\s+/g, \" \")\n        .trim();\n\n// 其乐标题太长：提取「游戏名 + 关键词」，做成 “xxx 发售特惠 / xxx 临时工” 这种短标题\n// 关键词按帖子内容判断；临时工 feed 里的“已发售/折扣”帖子不应该一律标成临时工\nconst KEYLOL_KEYWORDS = [\n    [\"临时工\", \"临时工\"],\n    [\"发售特惠\", \"发售特惠\"],\n    [\"已发售\", \"发售特惠\"],\n    [\"新史低\", \"新史低\"],\n    [\"史低\", \"史低\"],\n    [\"免费领取\", \"免费领取\"],\n    [\"喜加一\", \"喜加一\"],\n    [\"限时免费\", \"限时免费\"],\n    [\"免费\", \"免费\"],\n    [\"预售\", \"预售\"],\n    [\"折扣\", \"折扣\"],\n    [\"特惠\", \"特惠\"],\n    [\"更新\", \"更新\"]\n];\nconst KEYLOL_KEYWORD_PATTERN = KEYLOL_KEYWORDS.map(([needle]) =>\n    needle.replace(/[.*+?^$()|[\\]\\\\]/g, \"\\\\$&\")\n)\n    .sort((a, b) => b.length - a.length)\n    .join(\"|\");\nconst KEYLOL_KEYWORD_SPLIT_RE = new RegExp(\n    `(?:疑似|好像是|似乎是|好像|似乎|可能|貌似|突发|惊现|再现|又出|又见|又现|出现|迎来|开启|限时|首次|突然)?(?:${KEYLOL_KEYWORD_PATTERN})`\n);\nconst KEYLOL_PLATFORM_ONLY_RE =\n    /^(?:Steam|Epic|GOG|PSN|PS[45]|Xbox|NS2?|Switch|eShop|PC|主机|[阿土俄日港美欧国低外]区|\\s|\\/|\\+|-)+$/i;\n\nconst cleanKeylolName = (raw) =>\n    str(raw)\n        .replace(/^[：:，,。！？?!、\\s]+/, \"\")\n        .split(/[|｜？?！!，,。；;]/)[0]\n        .split(/\\s+[-–—]\\s+/)[0]\n        .split(/\\s*[￥¥$€£]\\s*\\d*/)[0]\n        .split(/\\s*[-+]?\\d+(?:\\.\\d+)?\\s*(?:%|折|元|块|刀|金币|(?:CNY|RMB|USD|HKD|JPY|ARS|TRY)(?![A-Za-z]))/i)[0]\n        .split(/\\s*(?:只要|仅售|仅需|现价|低至|直降|立减|打折|降价|免费送|白嫖)/)[0]\n        .replace(/(?:疑似|好像|似乎|可能|貌似|[：:（(\\s])+$/, \"\")\n        .trim()\n        .slice(0, 24);\n\nconst pickKeylolTagName = (tags) => {\n    if (!Array.isArray(tags)) return \"\";\n    for (const tag of tags) {\n        const s = str(tag).trim();\n        if (!s) continue;\n        if (/^(?:app|sub|bundle)\\/\\d+/i.test(s) || /待更新/.test(s)) continue;\n        return s.slice(0, 24);\n    }\n    return \"\";\n};\n\nconst keylolKeyword = (text) => {\n    const hit = KEYLOL_KEYWORDS.find(([needle]) => text.includes(needle));\n    return hit ? hit[1] : \"\";\n};\nconst keylolTitle = (value, fallbackKeyword, tags) => {\n    const text = removeTimestamp(value);\n    const match = text.match(/《([^》]+)》/);\n    let name = match ? match[1].trim() : \"\";\n    if (!name) {\n        const cleaned = text.replace(/^(?:【[^】]*】|\\[[^\\]]*\\]|\\s)+/, \"\").trim();\n        const kwMatch = cleaned.match(KEYLOL_KEYWORD_SPLIT_RE);\n        if (kwMatch && kwMatch.index !== undefined) {\n            const before = cleanKeylolName(cleaned.slice(0, kwMatch.index));\n            const after = cleanKeylolName(\n                cleaned\n                    .slice(kwMatch.index + kwMatch[0].length)\n                    .replace(/^[？?！!：:，,。、\\s]*(?:来啦|来了|快冲|速冲|赶紧冲)?[？?！!：:，,。、\\s]*/, \"\")\n            );\n            if (before && !KEYLOL_PLATFORM_ONLY_RE.test(before)) {\n                name = before;\n            } else if (after && !KEYLOL_PLATFORM_ONLY_RE.test(after)) {\n                name = after;\n            }\n        } else {\n            const candidate = cleanKeylolName(cleaned);\n            if (candidate && !KEYLOL_PLATFORM_ONLY_RE.test(candidate)) {\n                name = candidate;\n            }\n        }\n        if (!name) {\n            const tagName = pickKeylolTagName(tags);\n            if (tagName) name = tagName;\n        }\n    }\n    const keyword = keylolKeyword(text) || fallbackKeyword || \"\";\n    if (name) return keyword ? `${name} ${keyword}` : name;\n    return `其乐 ${keyword || \"新帖\"}`;\n};\n\nconst findSpotifyIcon = (artist) => {\n    const lower = str(artist).trim().toLowerCase();\n    if (!lower) return \"\";\n    if (SPOTIFY_ARTIST_ICONS[lower]) return SPOTIFY_ARTIST_ICONS[lower];\n    for (const part of lower.split(/[,，&]|\\bfeat\\.?\\b|\\bft\\.?\\b/i)) {\n        const key = part.trim();\n        if (key && SPOTIFY_ARTIST_ICONS[key]) return SPOTIFY_ARTIST_ICONS[key];\n    }\n    return \"\";\n};\nconst parseSpotifyEntry = (entry) => {\n    const titleText = removeTimestamp(entry.title);\n    const contentText = decodeHtml(entry.content);\n    // RSSHub /spotify/artist/:id 常见正文：\n    // \"Once Upon a Christmas Eve\" by Sample Artist, released at 2026-11-20 with 1 tracks.\n    const byInContent = contentText.match(\n        /\\bby\\s+(.+?)(?:,\\s*released\\b|\\s+released\\b|\\s+with\\s+\\d+\\s+tracks?\\b|\\.\\s*$|$)/i\n    );\n    const byInTitle = titleText.match(/\\bby\\s+(.+)$/i);\n    let artist = str((byInContent && byInContent[1]) || entry.author || (byInTitle && byInTitle[1]))\n        .trim()\n        .replace(/[.,;:\\s]+$/, \"\");\n\n    if (!artist) {\n        const combined = `${titleText} ${contentText}`;\n        for (const known of Object.keys(SPOTIFY_ARTIST_ICONS)) {\n            const re = new RegExp(`\\\\b${known.replace(/[.*+?^$()|[\\]\\\\]/g, \"\\\\$&\")}\\\\b`, \"i\");\n            const m = combined.match(re);\n            if (m) {\n                artist = m[0];\n                break;\n            }\n        }\n    }\n\n    const trackMatch = contentText.match(/\\bwith\\s+(\\d+)\\s+tracks?\\b/i);\n    const trackCount = trackMatch ? Number(trackMatch[1]) : NaN;\n    let releaseType = \"新专辑\";\n    if (!Number.isNaN(trackCount)) {\n        releaseType = trackCount <= 1 ? \"新单曲\" : \"新专辑\";\n    } else if (/\\bsingle\\b|单曲/i.test(`${titleText} ${contentText}`)) {\n        releaseType = \"新单曲\";\n    }\n\n    const icon = findSpotifyIcon(artist);\n    const title = artist ? `🎶 ${artist} 有${releaseType}发布` : `🎶 有${releaseType}发布`;\n    return { title, icon, artist, trackCount };\n};\n\n// 从 RSS 条目中提取可作为 Bark 附图的图片 URL（跳过论坛表情、GitHub 小头像及非图片链接）\nconst BAD_IMAGE_RE =\n    /\\/static\\/image\\/smiley\\/|avatars\\.githubusercontent\\.com|gravatar\\.com|shields?\\.io|(?:^|[\\/_-])(?:emoji|smiley|emoticon|favicon|badge|pixel|1x1)(?:[\\/_.-]|$)/i;\nconst IMAGE_EXT_RE = /\\.(?:jpe?g|png|webp|avif|bmp|gif)(?:$|[?#])/i;\nconst IMAGE_CDN_RE = /\\/(?:bfs|images?|img|media|photo|pics?|uploads?|store_item_assets)\\//i;\n\nconst cleanImgUrl = (raw) => str(raw).replace(/&amp;/gi, \"&\").trim();\nconst isUsableImage = (raw, { allowGif = true, fromEnclosure = false } = {}) => {\n    const url = cleanImgUrl(raw);\n    if (!/^https?:\\/\\//i.test(url)) return false;\n    if (BAD_IMAGE_RE.test(url)) return false;\n    if (!allowGif && /\\.gif(?:$|[?#])/i.test(url)) return false;\n    if (fromEnclosure) return true;\n    return IMAGE_EXT_RE.test(url) || IMAGE_CDN_RE.test(url);\n};\nconst extractHtmlImages = (html) => {\n    const urls = [];\n    const text = str(html);\n    for (const m of text.matchAll(/<img[^>]+\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']/gi)) {\n        urls.push(cleanImgUrl(m[1]));\n    }\n    return urls;\n};\nconst extractRssImage = (entry, type) => {\n    // Spotify / GitHub Releases 不从正文/enclosures 抓大图\n    if (type === 4 || type === 5) return \"\";\n    const content = str(entry.content);\n    const htmlImgs = extractHtmlImages(content);\n\n    // 直播间开播：取直播关键帧/封面图（过滤非图片网页链接）\n    if (type === 3) {\n        return htmlImgs.find((u) => isUsableImage(u, { allowGif: false })) || \"\";\n    }\n\n    // 其乐 Keylol：优先取非表情/非 gif 正文配图，找不到再按 Steam AppID 拼官方头图\n    if (type === 1 || type === 6) {\n        const hit = htmlImgs.find((u) => isUsableImage(u, { allowGif: false }));\n        if (hit) return hit;\n        const appMatch =\n            content.match(/store\\.steampowered\\.com\\/app\\/(\\d+)/i) ||\n            content.match(/steamdb\\.info\\/app\\/(\\d+)/i) ||\n            content.match(/[?&]appid=(\\d+)/i);\n        if (appMatch) {\n            return `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appMatch[1]}/header.jpg`;\n        }\n        return \"\";\n    }\n\n    // PT风向旗 / 通用 RSS：优先 enclosures 中的 image/*，其次正文首张有效图片\n    const enclosures = Array.isArray(entry.enclosures) ? entry.enclosures : [];\n    for (const enc of enclosures) {\n        if (!enc || !enc.url) continue;\n        const mime = str(enc.mime_type).toLowerCase();\n        if (mime.startsWith(\"image/\") || IMAGE_EXT_RE.test(str(enc.url))) {\n            if (isUsableImage(enc.url, { fromEnclosure: true })) return cleanImgUrl(enc.url);\n        }\n    }\n    return htmlImgs.find((u) => isUsableImage(u, { allowGif: false })) || \"\";\n};\n\nconst { kind, payload } = $input.first().json;\ntestMode = payload.__test === true || payload.event_type === \"save_entry\";\nif (kind !== \"rss\") return [];\n\nconst feed = payload.feed || {};\nconst feedTitle = str(feed.title);\nconst entries = Array.isArray(payload.entries) ? payload.entries : [];\n// 没匹配到已知主题时，是否也按通用 RSS 转发（false = 返回 400「无匹配的 RSS 主题」）\nconst FORWARD_UNKNOWN_RSS = true;\n// GitHub Releases 的 Miniflux 标题通常是 “Release notes from xxx”，\n// 不一定包含 Github Releases 字样，所以再用 feed_url / 条目链接兜底识别\nconst feedUrl = `${str(feed.feed_url)} ${str(feed.site_url)}`;\nconst looksGitHubRelease =\n    /github\\.com\\/[^/\\s]+\\/[^/\\s]+\\/releases/i.test(feedUrl) ||\n    entries.some((entry) => /github\\.com\\/[^/\\s]+\\/[^/\\s]+\\/releases\\//i.test(str(entry.url)));\n\nlet type = 0;\nlet baseTitle = \"\";\nlet baseIcon = \"\";\nlet feedBoard = \"\";\nlet feedRepo = \"\";\nif (feedTitle.includes(\"临时工\") && feedTitle.includes(\"其乐\")) {\n    type = 1;\n    feedBoard = feedTitle.split(\"-\")[0].trim() || \"临时工\";\n    baseTitle = \"🎉 其乐Keylol上有新的临时工消息 ！！！\";\n    baseIcon = KEYLOL_ICON;\n} else if (feedTitle.includes(\"其乐\") || /keylol/i.test(feedTitle)) {\n    // 其乐的其它板块（购物心得、游戏情报等）\n    type = 6;\n    feedBoard = feedTitle.split(\"-\")[0].trim() || \"其乐\";\n    baseTitle = \"🛒\";\n    baseIcon = KEYLOL_ICON;\n} else if (feedTitle.includes(\"PT风向旗\")) {\n    type = 2;\n    baseTitle = \"⛓️ PT站点有新的动态 ！！！\";\n    baseIcon = PT_CHANNEL_ICON;\n} else if (\n    /直播|开播/.test(feedTitle) ||\n    entries.some((entry) =>\n        /(live\\.bilibili\\.com|douyu\\.com|huya\\.com|twitch\\.tv|youtube\\.com\\/live)/i.test(str(entry.url))\n    )\n) {\n    type = 3;\n    const feedLooksLive = /直播|开播/.test(feedTitle);\n    const liveName = feedLooksLive ? feedTitle.split(/直播间|直播|开播/)[0].trim() : \"\";\n    baseTitle = liveName\n        ? `📺 ${liveName}开播了 ！！！`\n        : feedLooksLive\n          ? `📺 ${feedTitle} ！！！`\n          : \"📺 有新的开播 ！！！\";\n    baseIcon = LIVE_STREAM_ICON;\n} else if (/spotify/i.test(feedTitle) || /open\\.spotify\\.com/i.test(feedUrl)) {\n    type = 4;\n    baseTitle = \"🎶 有新专辑发布\";\n} else if (\n    feedTitle.includes(\"Github Realeases\") ||\n    feedTitle.includes(\"Github Releases\") ||\n    /release notes/i.test(feedTitle) ||\n    looksGitHubRelease\n) {\n    type = 5;\n    // 从 feed_url 或 “Release notes from xxx” 里取仓库名，标题更好认\n    const repoFromUrl = (feedUrl.match(/github\\.com\\/[^/\\s]+\\/([^/\\s]+)\\/releases/i) || [])[1];\n    const repoFromTitle = (feedTitle.match(/release notes from\\s+(.+)$/i) || [])[1];\n    const repo = str(repoFromUrl || repoFromTitle).trim();\n    feedRepo = repo;\n    baseTitle = repo ? `🔄 ${repo}` : \"🔄\";\n} else {\n    if (!FORWARD_UNKNOWN_RSS) return fail(\"无匹配的 RSS 主题\", \"RSS\");\n    type = 9;\n    baseTitle = \"📰\";\n}\n\nif (!entries.length) return fail(\"RSS 消息没有 entries\", \"RSS\");\n\nconst out = [];\nfor (const entry of entries) {\n    let title = baseTitle;\n    let icon = baseIcon;\n    let spotifyInfo = null;\n    if (type === 1) {\n        // 其乐临时工 feed：先按帖子内容判关键词，内容里没有关键词时才退回“临时工”\n        title = `🎉 ${keylolTitle(entry.title, \"临时工\", entry.tags)}`;\n    } else if (type === 6) {\n        // 其乐其它板块：提取游戏名 + 关键词（发售特惠 / 新史低 …）\n        title = `🛒 ${keylolTitle(entry.title, \"\", entry.tags)}`;\n    } else if (type === 9) {\n        // 通用 RSS：标题用条目标题\n        const postTitle = removeTimestamp(entry.title);\n        title = postTitle ? `📰 ${postTitle}` : `${baseTitle} ${feedTitle}`.trim();\n    } else if (type === 5) {\n        // GitHub Releases：标题写明哪个仓库有新版本\n        title = feedRepo ? `⬆️ ${feedRepo} 有新版本发布` : \"⬆️ 有新版本发布\";\n    } else if (type === 4) {\n        spotifyInfo = parseSpotifyEntry(entry);\n        title = spotifyInfo.title;\n        if (spotifyInfo.icon) icon = spotifyInfo.icon;\n    }\n    const boardLine = (type === 1 || type === 6) && feedBoard ? `【板块】${val(feedBoard)}\\n` : \"\";\n    const sourceLine = type === 9 ? `【来源】${val(feedTitle)}\\n` : \"\";\n    const trackText =\n        spotifyInfo && !Number.isNaN(spotifyInfo.trackCount) ? `${spotifyInfo.trackCount} 首` : DASH;\n    const body =\n        type === 5\n            ? `【版本】${val(removeTimestamp(entry.title))}\\n` +\n              `【发布时间】${val(formatTimestamp(entry.published_at))}\\n\\n` +\n              `📄查看版本更新说明📄 ${val(entry.url)}`\n            : type === 4\n              ? `【作品】${val(removeTimestamp(entry.title))}\\n` +\n                `【艺人】${val(spotifyInfo && spotifyInfo.artist)}\\n` +\n                `【曲目数】${trackText}\\n` +\n                `【发布时间】${val(formatTimestamp(entry.published_at))}\\n\\n` +\n                `🎧打开 Spotify🎧 ${val(entry.url)}`\n              : type === 3\n                ? `【标题】${val(removeTimestamp(entry.title))}\\n\\n` +\n                  `📺进入直播间📺 ${val(entry.url)}`\n                : boardLine +\n                  sourceLine +\n                  `【标题】${val(removeTimestamp(entry.title))}\\n` +\n                  `【发布时间】${val(formatTimestamp(entry.published_at))}\\n` +\n                  `【阅读时间】${readingText(entry.reading_time)}\\n\\n` +\n                  `🔍查看详情🔍 ${val(entry.url)}`;\n    const image = extractRssImage(entry, type);\n    out.push({\n        json: {\n            bark: bark(\"RSS\", title, body, { icon, image }),\n            source: \"RSS\"\n        }\n    });\n}\nreturn out;\n"
+      },
+      "id": "50e7aafc-5274-453e-83a4-d22d7f92097d",
+      "name": "解析 - RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 解析 - Diun\n */\n\n// ======================= 可配置图标 =======================\n// Docker Hub 镜像更新通知图标（如需外网展示，可改为你的公网 自建图床 图床地址）\nconst DIUN_DOCKER_ICON = \"https://cdn.jsdelivr.net/gh/selfhst/icons/png/docker.png\";\n// 非 Docker Hub 镜像（如 ghcr.io / lscr.io）的默认图标（留空则不设图标）\nconst DIUN_DEFAULT_ICON = \"\";\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nlet testMode = false;\nconst bark = (group, title, body, extra = {}) => {\n    const payload = { group, title: testMode ? `【🧪测试】 ${title}` : title, body, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    return payload;\n};\n\n// 时间统一按 UTC+8 显示，不依赖 n8n 容器的 TZ 设置\nconst formatDiunDate = (value) => {\n    const text = str(value).trim();\n    if (!text) return \"\";\n    const d = new Date(text);\n    if (Number.isNaN(d.getTime())) return text;\n    const hasZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(text);\n    const t = hasZone ? new Date(d.getTime() + 8 * 3600 * 1000) : d;\n    const year = hasZone ? t.getUTCFullYear() : t.getFullYear();\n    const month = hasZone ? t.getUTCMonth() + 1 : t.getMonth() + 1;\n    const day = hasZone ? t.getUTCDate() : t.getDate();\n    const hour = hasZone ? t.getUTCHours() : t.getHours();\n    const minute = hasZone ? t.getUTCMinutes() : t.getMinutes();\n    const p = (n) => String(n).padStart(2, \"0\");\n    return `${year}/${p(month)}/${p(day)} ${p(hour)}:${p(minute)}`;\n};\n\nconst { kind, payload } = $input.first().json;\ntestMode = payload.__test === true;\nif (kind !== \"diun\") return [];\n\nconst image = str(payload.image);\nconst parts = image.split(\"/\").reverse();\nconst registryPart = parts[1] || \"\";\nconst repoPart = str(parts[0]).split(\":\")[0];\nconst DASH = \"—\";\nconst val = (value) => {\n    const s = str(value).trim();\n    return s || DASH;\n};\nconst title = `🐳 ${val(`${registryPart}/${repoPart}`)} 有新版本发布`;\nconst body =\n    `【发布平台】${val(payload.provider)}\\n` +\n    `【镜像】${val(image)}\\n` +\n    `【更新时间】${val(formatDiunDate(payload.created))}\\n` +\n    `【支持架构】${val(payload.platform)}\\n` +\n    `【唯一标识】${val(payload.digest)}\\n` +\n    `【抓取列表】${val(payload.mime_type)}\\n` +\n    `【Diun 版本】${val(payload.diun_version)}\\n\\n` +\n    (image.includes(\"docker.io\") ? `🔗在DockerHub中查看🔗 ${val(payload.hub_link)}` : DASH);\n\nreturn [\n    {\n        json: {\n            bark: bark(\"Diun\", title, body, {\n                icon: image.includes(\"docker.io\") ? DIUN_DOCKER_ICON : DIUN_DEFAULT_ICON\n            }),\n            source: \"Diun\"\n        }\n    }\n];\n"
+      },
+      "id": "a8c42eeb-8957-48a5-93c7-b06c37389e97",
+      "name": "解析 - Diun",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 解析 - Wallos（订阅到期提醒）\n */\n\n// ======================= 可配置图标 =======================\n// Wallos 订阅到期提醒图标\nconst WALLOS_ICON = \"https://cdn.jsdelivr.net/gh/selfhst/icons/png/wallos.png\";\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nlet testMode = false;\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    return payload;\n};\n\nconst { kind, payload } = $input.first().json;\ntestMode = payload.__test === true;\nif (kind !== \"wallos\") return [];\n\nconst many = payload.subscriptionsinfo || {};\nconst one = payload.subscriptioninfo || {};\nconst pick = (key) => {\n    const a = str(one[key]).trim();\n    if (a) return a;\n    return str(many[key]).trim();\n};\n\nconst DASH = \"—\";\nconst val = (value) => {\n    const s = str(value).trim();\n    return s || DASH;\n};\nconst amountText = [pick(\"price\"), pick(\"currency\")].filter(Boolean).join(\" \");\nconst priceText = [pick(\"payer\"), amountText].filter(Boolean).join(\" ➡️ \") || DASH;\nconst days = pick(\"days\");\nconst title = `💳 ${val(pick(\"name\"))} 订阅即将到期！！！`;\nconst body =\n    `【订阅价格】${priceText}\\n` +\n    `【订阅时限】${days ? `${days} 天` : DASH}\\n` +\n    `【订阅类别】${val(pick(\"category\"))}\\n` +\n    `【订阅日期】${val(pick(\"date\"))}\\n` +\n    `【订阅备注】${val(pick(\"notes\"))}\\n\\n` +\n    `🔗订阅链接🔗 ${val(pick(\"url\"))}`;\n\nreturn [\n    {\n        json: {\n            bark: bark(\"Wallos\", title, body, { icon: WALLOS_ICON }),\n            source: \"Wallos\"\n        }\n    }\n];\n"
+      },
+      "id": "053d6986-409b-4a9d-8fe9-0181ca2a3df2",
+      "name": "解析 - Wallos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 解析 - Grafana 告警\n */\n\n// ======================= 可配置图标 =======================\n// 默认 Grafana 图标（未命中下方系统专属图标，或对应项留空 \"\" 时统一使用）\nconst GRAFANA_DEFAULT_ICON = \"https://cdn.jsdelivr.net/gh/selfhst/icons/png/grafana.png\";\n\n// 不同系统的专属图标配置：[匹配关键词数组（不区分大小写）, 图标网址]\n// - 会同时匹配 alert.labels.grafana_folder 与 alert.labels.alertname，按从上到下的顺序优先命中；\n// - 图标网址留空 \"\" 表示暂不启用该系统专属图标，自动回退到 GRAFANA_DEFAULT_ICON；\n// - 想为某个系统设置独立 Logo，直接把你的 自建图床 或其它公网图片网址填进引号里即可。\nconst GRAFANA_SYSTEM_ICONS = [\n    [[\"immortalwrt\", \"openwrt\"], \"\"], // ImmortalWRT / OpenWrt 软路由（放 PVE 前面，避免被 PVE 抢先命中）\n    [[\"unraid\"], \"\"],                 // unRAID 服务器\n    [[\"pve\", \"proxmox\"], \"\"],         // Proxmox VE 宿主机\n    [[\"synology\", \"dsm\"], \"\"]         // 群晖 Synology NAS\n    // 新增其它系统示例：\n    // [[\"ubuntu\", \"debian\"], \"https://cdn.jsdelivr.net/gh/selfhst/icons/png/ubuntu.png\"],\n];\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nlet testMode = false;\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    return payload;\n};\nconst fail = (reason, source) => [{ json: { unmatched: true, reason, source } }];\n\n// 时间统一按 UTC+8 显示，不依赖 n8n 容器的 TZ 设置\nconst formatTimestamp = (value) => {\n    const text = str(value).trim();\n    if (!text || /^0001-01-01/.test(text)) return \"\";\n    const d = new Date(text);\n    if (Number.isNaN(d.getTime())) return text;\n    const hasZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(text);\n    const t = hasZone ? new Date(d.getTime() + 8 * 3600 * 1000) : d;\n    const year = hasZone ? t.getUTCFullYear() : t.getFullYear();\n    const month = hasZone ? t.getUTCMonth() + 1 : t.getMonth() + 1;\n    const day = hasZone ? t.getUTCDate() : t.getDate();\n    const hour = hasZone ? t.getUTCHours() : t.getHours();\n    const minute = hasZone ? t.getUTCMinutes() : t.getMinutes();\n    const second = hasZone ? t.getUTCSeconds() : t.getSeconds();\n    const p = (n) => String(n).padStart(2, \"0\");\n    return `${year} 年 ${p(month)} 月 ${p(day)} 日 ${p(hour)} 时 ${p(minute)} 分 ${p(second)} 秒`;\n};\n\nconst { kind, payload } = $input.first().json;\ntestMode = payload.__test === true;\nif (kind !== \"grafana\") return [];\n\nconst alerts = Array.isArray(payload.alerts) ? payload.alerts : [];\nif (!alerts.length) return fail(\"Grafana alerts 为空\", \"Grafana\");\n\nconst DASH = \"—\";\nconst val = (value) => {\n    const s = str(value).trim();\n    return s || DASH;\n};\nconst round2 = (value) => {\n    const n = Number(value);\n    if (!Number.isFinite(n)) return str(value);\n    return String(Math.round(n * 100) / 100);\n};\n\nconst firstUrl = (...values) => {\n    for (const value of values) {\n        const s = str(value).trim();\n        if (/^https?:\\/\\//i.test(s)) return s;\n    }\n    return \"\";\n};\nconst resolveGrafanaIcon = (labels = {}) => {\n    const haystack = `${str(labels.grafana_folder)} ${str(labels.alertname)}`.toLowerCase();\n    for (const [keywords, iconUrl] of GRAFANA_SYSTEM_ICONS) {\n        const url = firstUrl(iconUrl);\n        if (!url) continue;\n        const list = Array.isArray(keywords) ? keywords : [keywords];\n        if (list.some((kw) => kw && haystack.includes(str(kw).toLowerCase()))) {\n            return url;\n        }\n    }\n    return GRAFANA_DEFAULT_ICON;\n};\n\nconst out = [];\nfor (const alert of alerts) {\n    const labels = alert.labels || {};\n    const annotations = alert.annotations || {};\n    const icon = resolveGrafanaIcon(labels);\n    const image = firstUrl(alert.imageURL, payload.imageURL);\n\n    const status = str(alert.status).toLowerCase();\n    const isResolved = status === \"resolved\" || status === \"normal\";\n    let level;\n    if (status === \"firing\") level = \"critical\";\n    else if (isResolved) level = \"active\";\n    else if (status === \"pending\") level = \"passive\";\n\n    // Grafana 的详情在 summary / description（有的版本是 detail/message），\n    // 查询失败时还会带 Error，逐个兜底，别再出现空的“异常详情”\n    const summary = str(annotations.summary).trim();\n    const description = str(annotations.description).trim();\n    const errorText = str(annotations.Error).trim();\n    let detailText =\n        [summary, description].filter(Boolean).join(\"；\") ||\n        str(annotations.detail || annotations.message || errorText).trim() ||\n        DASH;\n\n    // values 的 key 是 Grafana 查询的 refId（A/B/C），对用户没意义，\n    // 只取真正的数值（跳过 -1 和 0/1 这类条件值），再按告警类型补单位。\n    const values = alert.values && typeof alert.values === \"object\" ? alert.values : {};\n    const numeric = Object.values(values).filter((value) => typeof value === \"number\" && value !== -1);\n    const meaningful = numeric.filter((value) => value !== 0 && value !== 1);\n    const chosen = meaningful.length ? meaningful : numeric;\n    const contextText = `${str(labels.alertname)} ${summary}`;\n    const unit = /温度/.test(contextText) ? \"°C\" : /(使用率|占用|CPU|内存|磁盘|负载)/.test(contextText) ? \"%\" : \"\";\n    const formattedValues = chosen.length\n        ? chosen.map((value) => `${round2(value)}${unit}`).join(\"、\")\n        : \"\";\n    const endsWithReached = /已达\\s*$/.test(detailText);\n\n    const title = isResolved\n        ? `✅ ${val(labels.alertname)} 已恢复`\n        : `⚠️ ${val(labels.alertname)}`;\n\n    let body = \"\";\n    if (isResolved) {\n        body += \"【状态】已恢复\\n\";\n        if (endsWithReached) {\n            if (formattedValues) body += `【当前数值】${formattedValues}\\n`;\n        } else if (detailText && detailText !== DASH) {\n            body += `【原告警内容】${detailText}\\n`;\n        }\n        body += `【报警时间】${val(formatTimestamp(alert.startsAt))}\\n`;\n        const resolvedAt = formatTimestamp(alert.endsAt);\n        if (resolvedAt) body += `【恢复时间】${resolvedAt}\\n`;\n        body +=\n            `\\n📊在Grafana中查看📊 ${val(alert.dashboardURL)}\\n` +\n            `📊查看机器整体运行状态📊 ${val(alert.panelURL)}`;\n    } else {\n        if (endsWithReached) {\n            detailText += formattedValues ? ` ${formattedValues}` : \"（数值不可用）\";\n        }\n        body =\n            `【异常详情】${detailText}\\n` +\n            `【报警时间】${val(formatTimestamp(alert.startsAt))}\\n`;\n        // 错误只保留“类型”（冒号前面），完整报错太长不再转发\n        const errorType = (errorText.split(/[:：]/)[0] || \"\").trim();\n        if (errorType) {\n            const shortError = errorType.length > 120 ? errorType.slice(0, 120) + \"…\" : errorType;\n            body += `【错误】${shortError}\\n`;\n        }\n        body +=\n            `\\n🛑关闭报警🛑 ${val(alert.silenceURL)}\\n` +\n            `📊在Grafana中查看📊 ${val(alert.dashboardURL)}\\n` +\n            `📊查看机器整体运行状态📊 ${val(alert.panelURL)}`;\n    }\n\n    out.push({\n        json: {\n            bark: bark(\"Grafana\", title, body, { icon, image, level }),\n            source: \"Grafana\"\n        }\n    });\n}\nreturn out;\n"
+      },
+      "id": "f52f7816-780a-4e36-823d-fdd83ec7d0d4",
+      "name": "解析 - Grafana",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 解析 - Zerobyte\n */\n\n// ======================= 可配置图标 =======================\n// Zerobyte 备份通知图标\nconst ZEROBYTE_ICON = \"\"; // 可选：填入你的 Zerobyte 图标 URL（留空则使用 Bark 默认图标）\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nlet testMode = false;\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    return payload;\n};\n\nconst { kind, payload } = $input.first().json;\ntestMode = payload.__test === true;\nif (kind !== \"zerobyte\") return [];\n\nreturn [\n    {\n        json: {\n            bark: bark(\n                \"Zerobyte\",\n                `💾 ${str(payload.zerobyte_title).trim() || \"—\"}`,\n                `【内容】${str(payload.zerobyte_message).trim() || \"—\"}`,\n                { icon: ZEROBYTE_ICON }\n            ),\n            source: \"Zerobyte\"\n        }\n    }\n];\n"
+      },
+      "id": "99caae2c-ff8d-485c-830a-1d2e90c3482d",
+      "name": "解析 - Zerobyte",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 解析 - Dockhand\n * 识别容器/Stack/环境/批量更新/镜像清理等事件，镜像图标走 selfh.st 索引（缓存 24 小时）\n */\n\n// ======================= 可配置图标 =======================\n// selfh.st 图标索引地址（缓存 24 小时）与 PNG 图标目录前缀\nconst SELFHST_INDEX_URL = \"https://cdn.jsdelivr.net/gh/selfhst/icons/index.json\";\nconst SELFHST_ICON_BASE = \"https://cdn.jsdelivr.net/gh/selfhst/icons/png\";\n// 未匹配到镜像图标时的默认图标名（对应 ${SELFHST_ICON_BASE}/docker.png）\nconst DOCKHAND_DEFAULT_ICON_REF = \"docker\";\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nlet testMode = false;\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    return payload;\n};\n\n// 时间统一按 UTC+8 显示，不依赖 n8n 容器的 TZ 设置\nconst formatTimestamp = (value) => {\n    const text = str(value).trim();\n    if (!text) return \"\";\n    const d = new Date(text);\n    if (Number.isNaN(d.getTime())) return text;\n    const hasZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(text);\n    const t = hasZone ? new Date(d.getTime() + 8 * 3600 * 1000) : d;\n    const year = hasZone ? t.getUTCFullYear() : t.getFullYear();\n    const month = hasZone ? t.getUTCMonth() + 1 : t.getMonth() + 1;\n    const day = hasZone ? t.getUTCDate() : t.getDate();\n    const hour = hasZone ? t.getUTCHours() : t.getHours();\n    const minute = hasZone ? t.getUTCMinutes() : t.getMinutes();\n    const second = hasZone ? t.getUTCSeconds() : t.getSeconds();\n    const p = (n) => String(n).padStart(2, \"0\");\n    return `${year} 年 ${p(month)} 月 ${p(day)} 日 ${p(hour)} 时 ${p(minute)} 分 ${p(second)} 秒`;\n};\n\nconst normalize = (value) =>\n    str(value)\n        .toLowerCase()\n        .replace(/[^a-z0-9]+/g, \"-\")\n        .replace(/^-+|-+$/g, \"\");\n\nconst ICON_ALIAS = {\n    postgres: \"postgresql\",\n    pgsql: \"postgresql\",\n    mongo: \"mongodb\",\n    nodered: \"node-red\",\n    \"immich-server\": \"immich\",\n    \"immich-machine-learning\": \"immich\",\n    \"mastodon-web\": \"mastodon\",\n    \"mastodon-streaming\": \"mastodon\",\n    \"mastodon-sidekiq\": \"mastodon\",\n    \"librespeed-speedtest\": \"librespeed\",\n    speedtest: \"librespeed\",\n    \"nextcloud-releases\": \"nextcloud\",\n    \"livekit-server\": \"livekit\",\n    \"moviepilot-v3\": \"moviepilot\",\n    matrixdotorg: \"matrix\",\n    synapse: \"matrix\"\n};\n\nfunction imageCandidates(image) {\n    const out = new Set();\n    const add = (value) => {\n        const v = normalize(value);\n        if (v) out.add(v);\n    };\n    let ref = str(image).trim();\n    if (!ref) return [];\n    ref = ref.split(\"@\")[0];\n    ref = ref.replace(/:[^/:]+$/, \"\");\n    const parts = ref.split(\"/\").filter(Boolean);\n    if (parts.length > 1 && /[.:]/.test(parts[0])) parts.shift();\n    const name = parts.pop() || \"\";\n    const path = parts.join(\"/\");\n\n    add(name);\n    add(path);\n    add(path ? `${path}-${name}` : \"\");\n    for (const segment of path.split(\"/\")) {\n        add(segment);\n        add(segment.replace(/-releases$/, \"\"));\n    }\n\n    const suffixes = [\n        \"-server\", \"-app\", \"-web\", \"-api\", \"-worker\", \"-service\",\n        \"-db\", \"-database\", \"-redis\", \"-postgres\", \"-postgresql\",\n        \"-mysql\", \"-mariadb\", \"-machine-learning\", \"-ml\", \"-aio\",\n        \"-latest\", \"-v2\", \"-v3\", \"-v4\"\n    ];\n    for (const suffix of suffixes) {\n        if (name.endsWith(suffix)) add(name.slice(0, -suffix.length));\n    }\n\n    const stopwords = new Set([\n        \"server\", \"service\", \"app\", \"web\", \"api\", \"worker\", \"latest\",\n        \"release\", \"stable\", \"alpine\", \"slim\", \"base\", \"core\", \"main\",\n        \"edge\", \"proxy\", \"static\", \"admin\", \"users\", \"push\", \"gateway\",\n        \"messages\", \"media\", \"gifs\", \"unfurl\", \"snowflakes\", \"aio\",\n        \"machine\", \"learning\", \"ml\", \"db\", \"database\"\n    ]);\n    for (const token of name.split(\"-\")) {\n        if (token.length >= 3 && !stopwords.has(token)) add(token);\n    }\n    return [...out];\n}\n\nconst n8nContext = this;\nconst httpRequest =\n    n8nContext && n8nContext.helpers && n8nContext.helpers.httpRequest\n        ? n8nContext.helpers.httpRequest.bind(n8nContext.helpers)\n        : null;\n\nasync function dockerIcon(image) {\n    const staticData = $getWorkflowStaticData(\"global\");\n    let refs = Array.isArray(staticData.selfhstRefs) ? staticData.selfhstRefs : [];\n    const stale = !refs.length || !staticData.selfhstAt || Date.now() - staticData.selfhstAt > 24 * 60 * 60 * 1000;\n    if (stale && httpRequest) {\n        try {\n            const data = await httpRequest({\n                url: SELFHST_INDEX_URL,\n                method: \"GET\",\n                json: true,\n                timeout: 10000\n            });\n            if (Array.isArray(data) && data.length) {\n                refs = data.map((item) => item && item.Reference).filter(Boolean);\n                staticData.selfhstRefs = refs;\n                staticData.selfhstAt = Date.now();\n            }\n        } catch (e) {\n            // 索引拉取失败时保留旧缓存，图标节点继续使用已有 refs\n        }\n    }\n\n    const refSet = new Set(refs);\n    const candidates = imageCandidates(image);\n    let ref = \"\";\n    for (const candidate of candidates) {\n        if (Object.prototype.hasOwnProperty.call(ICON_ALIAS, candidate)) {\n            const target = ICON_ALIAS[candidate];\n            if (target && (!refSet.size || refSet.has(target))) {\n                ref = target;\n                break;\n            }\n            continue;\n        }\n        if (refSet.has(candidate)) {\n            ref = candidate;\n            break;\n        }\n    }\n    if (!ref && refSet.size) {\n        const sorted = refs.slice().sort((a, b) => b.length - a.length);\n        for (const candidate of candidates) {\n            if (candidate.length < 3) continue;\n            const hit = sorted.find(\n                (r) => r.length >= 3 && (candidate.includes(r) || r.includes(candidate))\n            );\n            if (hit) {\n                ref = hit;\n                break;\n            }\n        }\n    }\n    if (!ref && !refSet.size && candidates.length) ref = candidates[0];\n    return `${SELFHST_ICON_BASE}/${ref || DOCKHAND_DEFAULT_ICON_REF}.png`;\n}\n\nconst shortText = (text, max = 260) => {\n    const clean = str(text).replace(/\\s+/g, \" \").trim();\n    if (!clean) return \"\";\n    return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;\n};\n\nconst { kind, payload } = $input.first().json;\ntestMode = payload.__test === true;\nif (kind !== \"dockhand\") return [];\n\nconst rawTitle = str(payload.title).trim() || \"Dockhand 通知\";\nconst rawMessage = str(payload.message).trim();\nconst payloadType = str(payload.type).toLowerCase();\nconst environment = payload.environment ? str(payload.environment).trim() : \"\";\nconst timestamp = payload.timestamp || payload.time || new Date().toISOString();\nconst pick = (re) => {\n    const match = rawMessage.match(re);\n    return match ? match[1].trim() : \"\";\n};\nconst container = pick(/Container\\s+\"([^\"]+)\"/i);\nconst stack = pick(/Stack\\s+\"([^\"]+)\"/i);\nconst envName = pick(/Environment\\s+\"([^\"]+)\"/i) || environment;\n\nconst raw = `${rawTitle} ${rawMessage}`;\nconst isBatchUpdates = /updates?\\s+available/i.test(raw);\nconst pruneMatch = rawTitle.match(/^(Image|Container|Volume|Network|System)\\s+prune\\b/i) ||\n    raw.match(/\\b(Image|Container|Volume|Network|System)\\s+prune\\b/i);\n\n// 单容器事件才从括号里提取镜像名；批量更新清单不要误取最后一个镜像\nlet image = \"\";\nif (!isBatchUpdates && !pruneMatch) {\n    const parens = [...rawMessage.matchAll(/\\(([^()]+)\\)/g)].map((m) => m[1].trim());\n    image = parens.reverse().find(\n        (value) => /^[a-z0-9][a-z0-9._\\/:@-]*$/i.test(value) && /[\\/:]/.test(value)\n    ) || \"\";\n}\n\nlet event = \"通知消息\";\nlet emoji = \"🔔\";\nlet level = \"active\";\nlet subject = \"\";\nlet detailText = \"\";\nlet updateLines = [];\nlet showRawTitle = false;\n\nif (/test/i.test(rawTitle)) {\n    event = \"测试通知\";\n    emoji = \"🧪\";\n    detailText = \"Dockhand 测试通知，收到即表示通知配置正常\";\n} else if (isBatchUpdates) {\n    // 批量容器/镜像可更新清单：解析每行 \"- 容器名 (镜像): ...\"\n    const parsedUpdates = [];\n    for (const line of rawMessage.split(/\\r?\\n/)) {\n        const m = line.match(/^\\s*-\\s+([^\\s(]+)(?:\\s*\\(([^)]+)\\))?/);\n        if (m) parsedUpdates.push({ name: m[1].trim(), image: (m[2] || \"\").trim() });\n    }\n    const countMatch = rawMessage.match(/(\\d+)\\s+update\\(?s?\\)?\\s+available/i);\n    const totalCount = countMatch ? Number(countMatch[1]) : parsedUpdates.length;\n    event = totalCount ? `${totalCount} 个容器可更新` : \"容器可更新\";\n    emoji = \"📦\";\n    subject = envName;\n    if (parsedUpdates.length === 1 && parsedUpdates[0].image) {\n        image = parsedUpdates[0].image;\n    }\n    const MAX_SHOW = 12;\n    if (parsedUpdates.length) {\n        updateLines = parsedUpdates\n            .slice(0, MAX_SHOW)\n            .map((u) => (u.image ? `· ${u.name} (${u.image})` : `· ${u.name}`));\n        if (parsedUpdates.length > MAX_SHOW) {\n            updateLines.push(`… 其余 ${parsedUpdates.length - MAX_SHOW} 个容器略`);\n        }\n    } else if (rawMessage) {\n        detailText = shortText(rawMessage, 320);\n    }\n} else if (pruneMatch) {\n    const targetMap = {\n        image: \"镜像\",\n        container: \"容器\",\n        volume: \"卷\",\n        network: \"网络\",\n        system: \"系统\"\n    };\n    const targetLabel = targetMap[pruneMatch[1].toLowerCase()] || \"镜像\";\n    const isFail = payloadType === \"error\" || /fail|error|timeout|exceeded/i.test(raw);\n    if (isFail) {\n        event = `${targetLabel}清理失败`;\n        emoji = \"🚨\";\n        level = \"critical\";\n        detailText = shortText(rawMessage, 240);\n    } else {\n        event = `${targetLabel}清理完成`;\n        emoji = \"🧹\";\n        const reclaimed = rawMessage.match(\n            /(\\d+)\\s+unused\\s+images?\\s+removed,\\s*([\\d.]+\\s*[KMGTP]?B)\\s+disk\\s+space\\s+reclaimed/i\n        );\n        detailText = reclaimed\n            ? `已清理 ${reclaimed[1]} 个未使用镜像，释放 ${reclaimed[2]} 空间`\n            : shortText(rawMessage, 240);\n    }\n    subject = envName;\n} else if (/unhealthy/i.test(raw)) {\n    if (/stack/i.test(raw)) {\n        event = \"Stack异常\";\n    } else if (/environment/i.test(raw)) {\n        event = \"环境异常\";\n    } else {\n        event = \"Container异常\";\n    }\n    emoji = \"🚨\";\n    level = \"critical\";\n} else if (/container/i.test(raw)) {\n    if (/offline|unreachable|disconnected/i.test(raw)) {\n        event = \"Container异常\";\n        emoji = \"🚨\";\n        level = \"critical\";\n    } else if (/healthy/i.test(raw)) {\n        event = \"Container健康\";\n        emoji = \"✅\";\n    } else if (/start|launch/i.test(raw)) {\n        event = \"Container启动\";\n        emoji = \"🟢\";\n    } else if (/stop|kill|shutdown/i.test(raw)) {\n        event = \"Container停止\";\n        emoji = \"🟡\";\n    } else if (/restart/i.test(raw)) {\n        event = \"Container重启\";\n        emoji = \"🔄\";\n    } else if (/recreat/i.test(raw)) {\n        event = \"Container重建\";\n        emoji = \"🛠️\";\n    } else if (/updat|pull/i.test(raw)) {\n        event = \"Container更新\";\n        emoji = \"⚡\";\n    } else if (/remov|delet/i.test(raw)) {\n        event = \"Container删除\";\n        emoji = \"🗑️\";\n    } else if (/creat/i.test(raw)) {\n        event = \"Container创建\";\n        emoji = \"📦\";\n    } else {\n        event = \"Container通知\";\n        showRawTitle = true;\n        detailText = shortText(rawMessage, 240);\n    }\n} else if (/stack/i.test(raw)) {\n    if (/offline|unreachable|disconnected/i.test(raw)) {\n        event = \"Stack异常\";\n        emoji = \"🚨\";\n        level = \"critical\";\n    } else if (/deploy/i.test(raw)) {\n        event = \"Stack部署\";\n        emoji = \"🚀\";\n    } else if (/start/i.test(raw)) {\n        event = \"Stack启动\";\n        emoji = \"🟢\";\n    } else if (/stop|down/i.test(raw)) {\n        event = \"Stack停止\";\n        emoji = \"🟡\";\n    } else if (/restart/i.test(raw)) {\n        event = \"Stack重启\";\n        emoji = \"🔄\";\n    } else if (/recreat/i.test(raw)) {\n        event = \"Stack重建\";\n        emoji = \"🛠️\";\n    } else if (/updat|pull/i.test(raw)) {\n        event = \"Stack更新\";\n        emoji = \"⚡\";\n    } else if (/remov|delet/i.test(raw)) {\n        event = \"Stack删除\";\n        emoji = \"🗑️\";\n    } else if (/creat/i.test(raw)) {\n        event = \"Stack创建\";\n        emoji = \"📦\";\n    } else {\n        event = \"Stack通知\";\n        showRawTitle = true;\n        detailText = shortText(rawMessage, 240);\n    }\n} else if (/environment/i.test(raw)) {\n    if (/offline|unreachable|disconnected/i.test(raw)) {\n        event = \"环境离线\";\n        emoji = \"🚨\";\n        level = \"critical\";\n    } else if (/online|reachable|connected/i.test(raw)) {\n        event = \"环境在线\";\n        emoji = \"🌐\";\n    } else {\n        event = \"环境通知\";\n        showRawTitle = true;\n        detailText = shortText(rawMessage, 240);\n    }\n} else if (/image/i.test(raw) && /(update|available|newer)/i.test(raw)) {\n    event = \"镜像更新\";\n    emoji = \"📦\";\n    detailText = shortText(rawMessage, 240);\n} else {\n    if (payloadType === \"error\" || /fail|error/i.test(rawTitle)) {\n        event = \"异常通知\";\n        emoji = \"🚨\";\n        level = \"critical\";\n    }\n    subject = envName;\n    showRawTitle = true;\n    detailText = shortText(rawMessage, 240);\n}\n\nif (!subject) {\n    subject = container || stack || (/^环境/.test(event) ? envName : \"\");\n}\nconst title = `${emoji} ${event}${subject ? \" · \" + subject : \"\"}`;\nconst bodyLines = [];\nif (showRawTitle && rawTitle) bodyLines.push(`【原始标题】${rawTitle}`);\nif (container) bodyLines.push(`【Container】${container}`);\nif (stack) bodyLines.push(`【Stack】${stack}`);\nif (image) bodyLines.push(`【镜像】${image}`);\nif (envName) bodyLines.push(`【环境】${envName}`);\nif (updateLines.length) bodyLines.push(`【更新清单】\\n${updateLines.join(\"\\n\")}`);\nif (detailText) bodyLines.push(`【详情】${detailText}`);\nbodyLines.push(`【触发时间】${formatTimestamp(timestamp)}`);\n\nreturn [\n    {\n        json: {\n            bark: bark(\"Dockhand\", title, bodyLines.join(\"\\n\"), {\n                icon: await dockerIcon(image),\n                level\n            }),\n            source: \"Dockhand\",\n            event\n        }\n    }\n];\n"
+      },
+      "id": "3fdeb5bd-f65e-4317-8172-308cd5ab9d43",
+      "name": "解析 - Dockhand",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        1080
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 无匹配来源：kind 不是任何已知来源时，输出 unmatched（由 IF 转到 400）\n */\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nconst fail = (reason, source) => [{ json: { unmatched: true, reason, source } }];\n\nconst { kind, payload } = $input.first().json;\n\nif (kind === \"mp-unknown\") {\n    return fail(`无匹配的 MoviePilot 事件类型：${str(payload.type) || \"(空)\"}`, \"MoviePilot\");\n}\nif (kind === \"unknown\") {\n    return fail(\"未知来源，无法匹配任何通知类型\", \"Unknown\");\n}\nreturn [];\n"
+      },
+      "id": "2214e774-b3e2-437b-922e-c123d5e3b34d",
+      "name": "无匹配来源",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        1400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 通知去重\n * 同一条消息在时间窗内重复到达（MoviePilot 重试、多通道重复、Miniflux 重投）只发一次；\n * 去重记录存在 workflow static data 里，跨执行有效；【🧪测试】消息不参与。\n * 全部被去重时输出一个 unmatched，避免 Webhook 没有响应可返回。\n */\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\n\n// ======================= 可调参数 =======================\nconst DEDUPE_WINDOW_SECONDS = 120; // 0 = 关闭\n// =======================================================\n\nconst shortHash = (text) => {\n    let hash = 5381;\n    for (let i = 0; i < text.length; i++) {\n        hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;\n    }\n    return (hash >>> 0).toString(36);\n};\n\nconst items = $input.all();\nconst staticData = $getWorkflowStaticData(\"global\");\nconst now = Date.now();\nconst ttl = DEDUPE_WINDOW_SECONDS * 1000;\n\nconst result = [];\nif (DEDUPE_WINDOW_SECONDS) {\n    const recent = (Array.isArray(staticData.recentBarks) ? staticData.recentBarks : []).filter(\n        (item) => item && typeof item.t === \"number\" && now - item.t < ttl\n    );\n    for (const item of items) {\n        const payload = item.json && item.json.bark;\n        if (!payload || str(payload.title).includes(\"【🧪测试】\")) {\n            result.push(item);\n            continue;\n        }\n        const key = shortHash(`${str(payload.group)}\\n${str(payload.title)}\\n${str(payload.body)}`);\n        if (recent.some((entry) => entry.k === key)) continue;\n        recent.push({ k: key, t: now });\n        result.push(item);\n    }\n    staticData.recentBarks = recent.slice(-100);\n} else {\n    result.push(...items);\n}\n\nif (!result.length) {\n    return [\n        {\n            json: {\n                deduped: true,\n                reason: \"通知重复，已幂等忽略\",\n                source: \"dedupe\"\n            }\n        }\n    ];\n}\nreturn result;\n"
+      },
+      "id": "85a2757c-c491-41b9-89eb-54f7d4ca845c",
+      "name": "通知去重",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "unmatched-1",
+              "leftValue": "={{ $json.unmatched !== true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "95c356dc-7cf6-4195-acf2-1d4c90393bae",
+      "name": "是否是已匹配通知",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ title: $input.first().json.deduped ? '重复通知已忽略' : '通知已接收', type: $input.first().json.deduped ? '重复跳过' : '成功处理', sender: 'n8n', destination: 'Self-Hosted Bark', count: $input.all().filter((i) => !i.json.deduped).length, deduped: Boolean($input.first().json.deduped) }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "94e94057-23da-4a9f-8895-d52c155588a3",
+      "name": "响应 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1420,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "aggregate-1",
+              "leftValue": "={{ !!($json.transfer && $json.transfer.kind === 'episode') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e99e3381-0d8f-4b63-a009-9ce8554e23f0",
+      "name": "是否入库可聚合",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 入库缓冲（文件队列）\n *\n * 每个入库事件写一个独立 JSON 文件，避免多个 execution 并发修改\n * workflow static data 时互相覆盖、随机丢集数。\n *\n * 需要 n8n 允许 fs：在 stack.env 里加\n *   NODE_FUNCTION_ALLOW_BUILTIN=fs\n * 没有 fs 权限时：直接输出 bark 立即逐条发送（不聚合，但不丢消息）。\n */\n\n// 缓冲目录，默认放在 n8n 的 .n8n 数据卷里；要换路径改这里\nconst BUFFER_DIR = \"/home/node/.n8n/transfer_buffer\";\n\nconst items = $input.all();\nif (!items.length) return [];\n\nlet fs = null;\ntry {\n    fs = require(\"fs\");\n} catch (e) {\n    fs = null;\n}\n\nconst payloads = items\n    .map((item) => item.json)\n    .filter((json) => json && json.transfer && json.transfer.kind === \"episode\" && json.bark);\n\n// 没有 fs 权限：不聚合，直接发，避免静默丢消息\nif (!fs) {\n    console.log(\"入库聚合: 没有 fs 权限（需 NODE_FUNCTION_ALLOW_BUILTIN=fs），本次逐条发送\");\n    return payloads.map((json) => ({ json: { bark: json.bark, source: json.source, event: json.event } }));\n}\n\ntry {\n    fs.mkdirSync(BUFFER_DIR, { recursive: true });\n    for (const json of payloads) {\n        const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;\n        const final = `${BUFFER_DIR}/${stamp}.json`;\n        const tmp = `${final}.tmp`;\n        fs.writeFileSync(tmp, JSON.stringify({ at: Date.now(), transfer: json.transfer, bark: json.bark }));\n        fs.renameSync(tmp, final);\n    }\n} catch (error) {\n    // 写文件失败也退回逐条发送，避免丢通知\n    console.log(`入库聚合: 写缓冲失败（${error.message}），本次逐条发送`);\n    return payloads.map((json) => ({ json: { bark: json.bark, source: json.source, event: json.event } }));\n}\n\nreturn [];\n"
+      },
+      "id": "fd171ae8-877d-4d24-ab10-95eb80e9a60e",
+      "name": "入库缓冲",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 合并入库通知\n * 输入：刷出节点给出的 { items: [...], claimedFiles: [...] }（同一剧同一季的一批入库）\n * 单集：原样发送；多集（含多集单文件如 E01-E02）：合并成 “剧名 (年份) S05 E01-E08 已入库”。\n * 所有输出构建完成后再清理 .processing 队列文件，避免中途报错丢通知。\n */\n\n// ======================= 可配置图标 =======================\n// MoviePilot 默认图标（队列条目缺失图标时的统一兜底）\nconst MP_DEFAULT_ICON = \"\"; // 可选：MoviePilot 默认兜底图标 URL（留空则使用 Bark 默认图标）\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nconst num = (v) => {\n    const n = Number(v);\n    return Number.isFinite(n) ? n : 0;\n};\nconst round = (v, digits = 2) => {\n    const n = Number(v);\n    if (!Number.isFinite(n)) return str(n);\n    const factor = Math.pow(10, digits);\n    return Math.round(n * factor) / factor;\n};\nconst formatSize = (value) => {\n    const n = num(value);\n    if (n / 1000000000000 >= 1) return `${round(n / 1000000000000, 2)} TB`;\n    if (n / 1000000000 >= 1) return `${round(n / 1000000000, 2)} GB`;\n    return `${round(n / 1000000, 2)} MB`;\n};\nlet testMode = false;\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    if (!payload.icon) payload.icon = MP_DEFAULT_ICON;\n    return payload;\n};\n\nconst DASH = \"—\";\nconst val = (value) => {\n    const s = str(value).trim();\n    return s || DASH;\n};\nconst score = (value) => {\n    const raw = str(value).trim();\n    if (!raw) return DASH;\n    const n = Number(raw);\n    return Number.isFinite(n) ? n.toFixed(1) : raw;\n};\nconst linkJellyfin = (url) => `🎞️在Jellyfin中查看🎞️ ${val(url)}`;\nconst linkTMDB = (url) => `🔗在TMDB中查看🔗 ${val(url)}`;\nconst linkHomepage = (url) => `🌐查看影视官网🌐 ${val(url)}`;\n\nconst pad = (n) => String(n).padStart(2, \"0\");\n// 连续集数压缩：1..8 -> E01-E08；不连续则用顿号分隔\nconst formatEpisodes = (episodes) => {\n    const sorted = [...new Set(episodes)].sort((a, b) => a - b);\n    const parts = [];\n    for (let i = 0; i < sorted.length; ) {\n        let j = i;\n        while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;\n        parts.push(j > i ? `E${pad(sorted[i])}-E${pad(sorted[j])}` : `E${pad(sorted[i])}`);\n        i = j + 1;\n    }\n    return parts.join(\"、\");\n};\nconst extractEpisodes = (item) => {\n    const list =\n        (Array.isArray(item.episodes) && item.episodes.length && item.episodes) ||\n        (Array.isArray(item.meta && item.meta.episodes) && item.meta.episodes.length && item.meta.episodes) ||\n        (item.episode !== undefined && item.episode !== null ? [item.episode] : []);\n    return list.map(num).filter((n) => n > 0);\n};\n\nconst out = [];\nconst filesToCleanup = [];\nfor (const input of $input.all()) {\n    const batchItems = Array.isArray(input.json.items) ? input.json.items.slice() : [];\n    const claimedFiles = Array.isArray(input.json.claimedFiles) ? input.json.claimedFiles : [];\n    if (!batchItems.length) {\n        filesToCleanup.push(...claimedFiles);\n        continue;\n    }\n\n    if (batchItems.length === 1) {\n        const singleBark = { ...batchItems[0].bark };\n        if (!singleBark.icon) singleBark.icon = MP_DEFAULT_ICON;\n        if (singleBark.attach && !singleBark.image) singleBark.image = singleBark.attach;\n        delete singleBark.attach;\n        singleBark.title = clipUtf8(singleBark.title, 240, \"…\");\n        singleBark.body = clipUtf8(singleBark.body, 2800, \"\\n…（内容过长已截断）\");\n        out.push({ json: { bark: singleBark, source: \"MoviePilot\", event: \"transfer.complete\" } });\n        filesToCleanup.push(...claimedFiles);\n        continue;\n    }\n\n    batchItems.sort((a, b) => {\n        const ea = extractEpisodes(a)[0] || num(a.episode);\n        const eb = extractEpisodes(b)[0] || num(b.episode);\n        return ea - eb;\n    });\n    const meta = batchItems[0].meta || {};\n    testMode = Boolean(batchItems[0].bark && String(batchItems[0].bark.title).startsWith(\"【🧪测试】\"));\n\n    const allEpisodes = [];\n    for (const item of batchItems) allEpisodes.push(...extractEpisodes(item));\n    const uniqueEpisodes = [...new Set(allEpisodes)].sort((a, b) => a - b);\n    const episodeText = formatEpisodes(uniqueEpisodes);\n    const totalSize = batchItems.reduce((sum, item) => sum + num(item.size), 0);\n    const totalFiles = batchItems.reduce((sum, item) => sum + num((item.meta || {}).fileCount), 0);\n    const title = `🎬 ${str(meta.show)} S${pad(meta.season)} ${episodeText} 已入库`;\n    const body =\n        `【集数】${episodeText}（共 ${uniqueEpisodes.length} 集）\\n` +\n        `【评分】${score(meta.score)}\\n` +\n        `【流行度】${val(meta.popularity)}\\n` +\n        `【类别】${val(meta.category)}\\n` +\n        `【时长】${val(meta.duration)}\\n` +\n        `【质量】${val(meta.quality)}\\n` +\n        `【编码格式】${val(meta.encode)}\\n` +\n        `【合计】${totalFiles} 个文件\\n` +\n        `【大小】${formatSize(totalSize)}\\n\\n` +\n        `${linkJellyfin(meta.jellyfinUrl)}\\n` +\n        `${linkTMDB(meta.detailLink)}\\n` +\n        `${linkHomepage(meta.homepage)}`;\n\n    out.push({\n        json: {\n            bark: bark(\"MoviePilot\", title, body, { icon: meta.icon, image: meta.image || meta.attach }),\n            source: \"MoviePilot\",\n            event: \"transfer.complete\",\n            aggregated: uniqueEpisodes.length || batchItems.length\n        }\n    });\n    filesToCleanup.push(...claimedFiles);\n}\n\n// 输出全部构建成功后，再清理抢占到的 .processing 文件\nif (filesToCleanup.length) {\n    try {\n        const fs = require(\"fs\");\n        for (const file of filesToCleanup) {\n            try {\n                fs.unlinkSync(file);\n            } catch (e) {\n                // 忽略\n            }\n        }\n    } catch (e) {\n        // 无 fs 权限时跳过\n    }\n}\n\nreturn out;\n"
+      },
+      "id": "c7187ec0-6de3-4a04-a1c4-8ed19f3b524b",
+      "name": "合并入库通知",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.day.app/YOUR_BARK_DEVICE_KEY",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.bark) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c790c47d-261f-4a88-9e68-0f21deae52ef",
+      "name": "发送到 Bark",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2460,
+        360
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"title\":\"无匹配通知类型\",\"type\":\"通知转发失败\",\"sender\":\"n8n\",\"destination\":\"Self-Hosted Bark\"}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "a655107b-468e-407c-b983-8dc5b8a24776",
+      "name": "响应 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1420,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 迁移与部署说明\n\n这是 Node-RED `notify_forward_v2` 的 n8n 版本，解析已按应用拆成独立节点，方便单独查看、调试和单节点替换。\n\n### 导入后必须检查\n1. **发送到 Bark**：打开节点确认 URL 和 Device Key 指向你网关机可达的 Bark 地址（已开启失败重试，timeout 10s）。\n2. **容器环境变量**（在你的 n8n Docker 环境变量中修改后需重建 n8n 容器）：\n   - `TZ=Asia/Shanghai`（虽然各节点已内置 UTC+8 转换，仍建议保持容器时区一致）\n   - `NODE_FUNCTION_ALLOW_BUILTIN=fs`（用于文件队列入库聚合和可选文件日志；未配置时入库会自动退化为逐条直发，不丢消息）\n3. **激活工作流**：在右上角开启 **Active**，并将各应用的 Webhook 地址指向：\n   `https://<你的 n8n>/webhook/renotify`\n\n### 可调参数与机制说明\n- **文件日志（默认关闭）**：在 **准备请求** 改 `LOG_PATH`（如 `/home/node/.n8n/reNotify_log.txt`），超 `LOG_MAX_BYTES`（5 MB）按 `LOG_KEEP_RATIO`（0.8）原子轮转。\n- **入库聚合**：剧集入库（含 `S01 E01-E02` 多集范围）写入 `/home/node/.n8n/transfer_buffer`，每条一个独立文件防并发覆盖；**定时刷出入库**（每 10 秒）触发 **刷出入库缓冲**，同剧同季最后一集静默满 `TRANSFER_IDLE_SECONDS`（20s）或首集满 `TRANSFER_MAX_WAIT_SECONDS`（120s）后合并发送；异常滞留 `.processing` 满 5 分钟自动恢复重试一次。\n- **去重与防抖**：MoviePilot 与结构化事件重复的纯文本通知会直接过滤；**通知去重** 在 `DEDUPE_WINDOW_SECONDS`（默认 120s，0 = 关闭）内相同内容只发一次，重复命中返回 HTTP 200 并由 **是否有待发消息** 拦截不发 Bark。\n- **订阅修改过滤**：仅记账字段变化不推送，静默字段见 **解析 - MoviePilot** 中的 `MODIFY_QUIET_FIELDS`。\n- **刷流下载**：纯文本「刷流任务种子下载」已忽略，统一走 `plugin.triggered` 自定义格式（分组 `MoviePilot刷流`，带 MP 插件页链接）。\n- **测试方法**：Miniflux 对任意文章点「保存文章」，或发送带 `\"__test\": true` 的测试请求，均自动加 `【🧪测试】` 前缀且跳过 120s 去重。\n- **图标、附图与防超限**：`selfh.st` 图标索引在 static data 缓存 24 小时；MoviePilot 获取不到图标时统一兜底 `MP_DEFAULT_ICON`；影视海报/背景图走 Bark `image` 字段；所有通知均内置 APNs 4KB UTF-8 截断保护。",
+        "height": 660,
+        "width": 760,
+        "color": 5
+      },
+      "id": "21103aef-f45b-4e08-a9c8-46afe7cd56cd",
+      "name": "说明 - 迁移",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -760
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 响应与入库聚合策略\n\n### HTTP 响应规则\n- **200 OK（立即返回）**：\n  - 正常匹配并准备发送的通知（异步送 Bark，避免上游超时）；\n  - 被 `通知去重` 拦截的 120s 内重复通知（返回 `deduped: true`，上游不再误报红/重试，下游由 `是否有待发消息` 拦截）。\n- **400 Bad Request**：\n  - 未知来源或未识别的 MoviePilot 事件；\n  - 无真实字段变更的 `subscribe.modified`；\n  - 与结构化事件重复的 MoviePilot 纯文本通知。\n\n### 文件队列入库聚合\n- 目录：`/home/node/.n8n/transfer_buffer`（每事件独立 JSON，原子 rename 抢占）。\n- **防抖窗口**：同剧同季最后一集静默满 **20 秒**合并发出，连续下整季不被腰斩；首集等待满 **120 秒**兜底必发。\n- **防丢机制**：`合并入库通知` 构造完成后才删除 `.processing`；若中途崩溃滞留超 5 分钟，下次定时任务自动恢复重试一次。\n- **失败保护**：`transfer.success === false` 不进聚合，直接发 `❌ 入库失败`。",
+        "height": 660,
+        "width": 560,
+        "color": 4
+      },
+      "id": "e38e78da-7688-4cb7-9142-e095a124fcb5",
+      "name": "说明 - 响应",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        -760
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 支持的通知来源\n\n- **MoviePilot**：\n  - 订阅（添加 / 完成补齐季号 / 真假修改区分 / 删除）\n  - 下载开始、入库完成（单集与多集范围自动聚合、时长多值展示最短/最长/平均）\n  - 刷流插件、站点私信（含站点名与多行完整正文）、体育赛事、通用站内通知\n  - 无专属图标统一兜底 MP 图标，影视大图走 Bark `image`\n- **RSS / Miniflux**：\n  - 其乐 Keylol（自动提取游戏名 + 关键词）\n  - Spotify（自动提取艺人名 + 单曲/专辑区分 + 专属正文）\n  - PT风向旗、直播开播（仅按源名/直播域名判定）、GitHub Releases、通用 RSS\n- **Dockhand**：容器 / Stack / 环境事件、批量容器可更新清单、镜像清理完成/失败 + `selfh.st` 图标缓存\n- **Grafana**：告警触发与恢复（`resolved`）自动区分 + 图标匹配\n- **Wallos**：订阅到期提醒（兼容单复数字段）\n- **Diun / Zerobyte**：镜像更新与备份通知",
+        "height": 660,
+        "width": 540,
+        "color": 7
+      },
+      "id": "05a53c72-d9ab-4fa4-8219-55d31082eacd",
+      "name": "说明 - 支持来源",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2020,
+        -760
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 节点分层结构\n\n1. **入口层（Col 1–2）**\n   - `Webhook - /renotify` → `准备请求`：拆 body、归一化 Miniflux `save_entry`、可选写文件日志、识别来源 `kind`。\n\n2. **并行解析层（Col 3）**\n   - 7 个应用解析节点等距排开：`MoviePilot` / `RSS` / `Diun` / `Wallos` / `Grafana` / `Zerobyte` / `Dockhand`。\n   - 底部单独留白放置 `无匹配来源`（兜底特殊节点，日常无需修改）。\n\n3. **去重与响应层（Col 4–6）**\n   - `通知去重` → `是否是已匹配通知`：\n     - 匹配 / 幂等去重 → 上行 `响应 200`；\n     - 未匹配 / 过滤忽略 → 下行 `响应 400`。\n\n4. **分发与发送层（Col 7–10）**\n   - 主线（`y=360` 直线）：`响应 200` → `是否有待发消息` → `是否入库可聚合` → `发送到 Bark`。\n   - 上支路（`y=180`）：剧集入库 → `入库缓冲`（无 `fs` 权限时降级直连 Bark）。\n   - 独立定时支路（`y=900`）：`定时刷出入库` → `刷出入库缓冲` → `合并入库通知` → `发送到 Bark`。",
+        "height": 660,
+        "width": 580,
+        "color": 6
+      },
+      "id": "d5769a7f-3003-4923-bd68-cc53a2f69ec5",
+      "name": "说明 - 节点结构",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        800,
+        -760
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "ecfddaca-039f-4530-a9a0-5db21796638e",
+      "name": "定时刷出入库",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        1680,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * 刷出入库缓冲（文件队列）\n *\n * 由 Schedule Trigger 定时触发：读取缓冲目录，按「剧名+季」分组，\n * 满足「最后一条到达后静默满 TRANSFER_IDLE_SECONDS 秒」或「首条等待达 TRANSFER_MAX_WAIT_SECONDS 秒」\n * 即交给「合并入库通知」。\n *\n * 安全机制：\n * - 用 renameSync 原子抢占为 .processing，避免并发双发；\n * - 不在此节点提前删除 .processing，而是把路径交给「合并入库通知」构造成功后清理；\n * - 若下游意外中断导致 .processing 滞留超过 RECOVERY_SECONDS，自动恢复回 .json 重试一次。\n */\n\nconst BUFFER_DIR = \"/home/node/.n8n/transfer_buffer\"; // 与「入库缓冲」保持一致\nconst TRANSFER_IDLE_SECONDS = 20; // 最后一集到达后静默 20 秒再合并（避免连续入库被腰斩）\nconst TRANSFER_MAX_WAIT_SECONDS = 120; // 首集到达后最长等待 120 秒兜底必发\nconst RECOVERY_SECONDS = 300; // .processing 滞留 5 分钟视为异常中断，自动恢复重试一次\nconst STALE_SECONDS = 3600; // 清理超过 1 小时的残留 .tmp 或二次失败的 .processing\n\nlet fs = null;\ntry {\n    fs = require(\"fs\");\n} catch (e) {\n    fs = null;\n}\nif (!fs) return [];\n\nconst now = Date.now();\n\n// 先检查是否有因异常中断遗留的 .processing 文件：首次滞留恢复为 .recovered.json 重试一次\ntry {\n    for (const name of fs.readdirSync(BUFFER_DIR)) {\n        const full = `${BUFFER_DIR}/${name}`;\n        if (name.endsWith(\".processing\")) {\n            try {\n                const age = now - fs.statSync(full).mtimeMs;\n                if (age > RECOVERY_SECONDS * 1000 && !name.includes(\".recovered.\")) {\n                    const recovered = full.replace(/\\.json\\.processing$/, \".recovered.json\");\n                    fs.renameSync(full, recovered);\n                } else if (age > STALE_SECONDS * 1000) {\n                    fs.unlinkSync(full);\n                }\n            } catch (e) {\n                // 忽略并发竞争\n            }\n        } else if (name.endsWith(\".tmp\")) {\n            try {\n                if (now - fs.statSync(full).mtimeMs > STALE_SECONDS * 1000) fs.unlinkSync(full);\n            } catch (e) {\n                // 忽略\n            }\n        }\n    }\n} catch (e) {\n    return [];\n}\n\nlet files = [];\ntry {\n    files = fs.readdirSync(BUFFER_DIR).filter((name) => name.endsWith(\".json\"));\n} catch (e) {\n    return [];\n}\n\nconst records = [];\nfor (const file of files) {\n    try {\n        const data = JSON.parse(fs.readFileSync(`${BUFFER_DIR}/${file}`, \"utf8\"));\n        records.push({\n            file,\n            at: Number(data.at) || 0,\n            transfer: data.transfer || {},\n            bark: data.bark\n        });\n    } catch (e) {\n        // 跳过损坏/写了一半的文件\n    }\n}\n\nconst groups = new Map();\nfor (const record of records) {\n    const transfer = record.transfer;\n    if (!transfer || transfer.kind !== \"episode\" || !record.bark) continue;\n    const key = `${transfer.show}|S${transfer.season}`;\n    if (!groups.has(key)) groups.set(key, []);\n    groups.get(key).push(record);\n}\n\nconst out = [];\nfor (const list of groups.values()) {\n    const times = list.map((record) => record.at || now);\n    const firstAt = Math.min(...times);\n    const lastAt = Math.max(...times);\n    const idleReady = now - lastAt >= TRANSFER_IDLE_SECONDS * 1000;\n    const maxWaitReady = now - firstAt >= TRANSFER_MAX_WAIT_SECONDS * 1000;\n    if (!idleReady && !maxWaitReady) continue;\n\n    // rename 抢占文件，避免两个刷出执行同时发送同一批\n    const claimed = [];\n    for (const record of list) {\n        const source = `${BUFFER_DIR}/${record.file}`;\n        const target = `${source}.processing`;\n        try {\n            fs.renameSync(source, target);\n            claimed.push({ ...record, target });\n        } catch (e) {\n            // 已被其它执行处理\n        }\n    }\n    if (!claimed.length) continue;\n\n    out.push({\n        json: {\n            claimedFiles: claimed.map((record) => record.target),\n            items: claimed.map((record) => ({\n                episode: record.transfer.episode,\n                episodes: Array.isArray(record.transfer.episodes) && record.transfer.episodes.length\n                    ? record.transfer.episodes\n                    : [record.transfer.episode],\n                size: record.transfer.size,\n                bark: record.bark,\n                meta: record.transfer\n            }))\n        }\n    });\n}\n\nreturn out;\n"
+      },
+      "id": "abd84e4f-048a-4a33-9290-79bb6eda344d",
+      "name": "刷出入库缓冲",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * MoviePilot 通知（单节点）\n *\n * 统一处理 MoviePilot 的所有通知类型：\n *   - 订阅：subscribe.added / subscribe.complete / subscribe.modified / subscribe.deleted\n *   - 下载/入库：download.added / transfer.complete（入库额外输出 transfer 元数据供聚合）\n *   - 插件：plugin.triggered（刷流等）\n *   - 站内通知：notice.message（刷流、体育、站点私信、通用）\n *\n * 只处理 mp-* 来源，其它来源直接返回空数组，交给别的节点。\n */\n\n// ======================= 可配置图标与链接 =======================\n// MoviePilot 默认图标（所有 MP 通知在匹配不到媒体/站点图标时的统一兜底）\nconst MP_DEFAULT_ICON = \"\"; // 可选：MoviePilot 默认兜底图标 URL（留空则使用 Bark 默认图标）\n// 体育赛事通知（AutoSports 插件）图标\nconst SPORTS_ICON = \"\"; // 可选：体育赛事通知图标 URL\n// PT 站点图标映射（[站点关键词, 图标网址]，不区分大小写；未命中自动用 MP_DEFAULT_ICON）\nconst SITE_ICONS = [\n  // 可选：按站点关键词匹配专属图标（从上到下依次包含匹配），例如：\n  // [\"站点关键词\", \"https://your-image-host.example.com/icons/site.png\"]\n];\n// MoviePilot 与 Jellyfin 跳转地址\nconst MP_BASE_URL = \"https://your-moviepilot.example.com\"; // 修改为你的 MoviePilot 访问地址\nconst JELLYFIN_MOVIES = \"https://your-jellyfin.example.com/web/#/movies.html?topParentId=YOUR_MOVIES_LIBRARY_ID&collectionType=movies\"; // 可选：修改为你的 Jellyfin 电影库地址\nconst JELLYFIN_TV = \"https://your-jellyfin.example.com/web/#/tv.html?topParentId=YOUR_TV_LIBRARY_ID&collectionType=tvshows\"; // 可选：修改为你的 Jellyfin 剧集库地址\nconst JELLYFIN_SPORTS = \"https://your-jellyfin.example.com/web/#/list?parentId=YOUR_SPORTS_LIBRARY_ID&serverId=YOUR_JELLYFIN_SERVER_ID\"; // 可选：修改为你的 Jellyfin 体育库地址\n// ===============================================================\n\nlet testMode = false;\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nconst num = (v) => {\n    const n = Number(v);\n    return Number.isFinite(n) ? n : 0;\n};\nconst round = (v, digits = 2) => {\n    const n = Number(v);\n    if (!Number.isFinite(n)) return \"\";\n    const factor = Math.pow(10, digits);\n    return Math.round(n * factor) / factor;\n};\nconst formatSize = (value) => {\n    const n = num(value);\n    if (n / 1000000000000 >= 1) return `${round(n / 1000000000000, 2)} TB`;\n    if (n / 1000000000 >= 1) return `${round(n / 1000000000, 2)} GB`;\n    return `${round(n / 1000000, 2)} MB`;\n};\nconst lines = (v) => str(v).split(\"\\n\");\nconst after = (v, sep) => {\n    const s = str(v);\n    if (!sep) return s;\n    const i = s.indexOf(sep);\n    return i === -1 ? s : s.slice(i + sep.length);\n};\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    if (!payload.icon) payload.icon = MP_DEFAULT_ICON;\n    return payload;\n};\nconst fail = (reason, source) => [{ json: { unmatched: true, reason, source } }];\n\n// 统一展示格式：空值统一用 —，评分保留一位小数，时长省略为 0 的单位\nconst DASH = \"—\";\nconst val = (value) => {\n    const s = str(value).trim();\n    return s || DASH;\n};\nconst score = (value) => {\n    const raw = str(value).trim();\n    if (!raw) return DASH;\n    const n = Number(raw);\n    return Number.isFinite(n) ? n.toFixed(1) : raw;\n};\nconst durationText = (hours, minutes) => {\n    const h = Math.floor(num(hours));\n    const m = Math.round(num(minutes));\n    if (h && m) return `${h} 小时 ${m} 分钟`;\n    if (h) return `${h} 小时`;\n    if (m) return `${m} 分钟`;\n    return DASH;\n};\nconst formatMinutes = (minutes) => {\n    const total = Math.round(num(minutes));\n    if (total <= 0) return DASH;\n    return durationText(Math.floor(total / 60), total % 60);\n};\n// TMDB 的 episode_run_time 是常见单集时长列表（不是总时长）：\n// 单值直接展示；多值展示“最短 ~ 最长（平均）”；无数据时保持 —\nconst mediaDurationText = (mi = {}) => {\n    const rawList = Array.isArray(mi.episode_run_time) ? mi.episode_run_time : [];\n    const valid = rawList.map(num).filter((v) => v > 0);\n    if (valid.length === 1) return formatMinutes(valid[0]);\n    if (valid.length > 1) {\n        const min = Math.min(...valid);\n        const max = Math.max(...valid);\n        if (min === max) return formatMinutes(min);\n        const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);\n        return `${formatMinutes(min)} ~ ${formatMinutes(max)}（平均 ${formatMinutes(avg)}）`;\n    }\n    const rt = num(mi.runtime);\n    return rt > 0 ? formatMinutes(rt) : DASH;\n};\nconst linkMP = (url) => `🗃️在MP中查看🗃️ ${val(url)}`;\nconst linkTMDB = (url) => `🔗在TMDB中查看🔗 ${val(url)}`;\nconst linkJellyfin = (url) => `🎞️在Jellyfin中查看🎞️ ${val(url)}`;\nconst linkHomepage = (url) => `🌐查看影视官网🌐 ${val(url)}`;\nconst linkPT = (url) => `🔍在PT站中查看🔍 ${val(url)}`;\n\n// ======================= 可调参数 =======================\nconst BRUSHFLOW_PLUGIN_ID = \"BrushFlow\"; // 刷流插件 ID（插件页深链用）\nconst FORWARD_GENERIC_MP_NOTICE = true; // 通用 MoviePilot notice.message 是否也转发\nconst DROP_DUPLICATE_GENERIC_NOTICE = true; // 丢弃与已格式化事件重复的通用通知\nconst DROP_DUPLICATE_BRUSHFLOW_NOTICE = true; // 刷流的纯文本“种子下载”通知不再发\nconst FORWARD_SUBSCRIBE_MODIFIED = true; // 是否转发「真实」的订阅修改通知\n\n// 只有这些字段变化时不推送（MoviePilot 自己维护的记账字段，兼容 v3/v2 字段名）\nconst MODIFY_QUIET_FIELDS = new Set([\n    \"last_update\", \"last_search\", \"lack_episode\",\n    \"completed_episode\", \"completed_tracks\", \"total_episode\",\n    \"poster\", \"backdrop\", \"backdrop_path\", \"vote\", \"description\",\n    \"current_priority\", \"episode_priority\",\n    \"current_audio_format\", \"current_bitrate\", \"current_bit_depth\", \"current_sample_rate\",\n    \"execution_status\", \"finish_time\",\n    \"note\" // scene=progress 时只是已下载集数标记\n]);\nconst MODIFY_SCENE_LABELS = {\n    update: \"手动修改订阅\",\n    status: \"状态入口（启用/暂停/完成等）\",\n    reset: \"重置订阅\",\n    agent_update: \"Agent 修改\",\n    progress: \"下载进度更新\"\n};\nconst MODIFY_FIELD_LABELS = {\n    name: \"名称\", year: \"年份\", type: \"类型\", season: \"季\",\n    tmdbid: \"TMDB ID\", doubanid: \"豆瓣 ID\", bangumiid: \"Bangumi ID\", anilistid: \"AniList ID\",\n    media_source: \"数据源\", media_id: \"媒体 ID\",\n    filter: \"过滤规则\", include: \"包含\", exclude: \"排除\", filter_groups: \"过滤规则组\",\n    quality: \"质量\", resolution: \"分辨率\", effect: \"特效\", best_version: \"洗版\", best_version_full: \"全集洗版\",\n    audio_quality: \"音质\", audio_format: \"音频格式\",\n    min_bitrate: \"最低码率\", min_bit_depth: \"最低位深\", min_sample_rate: \"最低采样率\",\n    state: \"状态\", note: \"备注\", save_path: \"保存路径\", downloader: \"下载器\",\n    keyword: \"关键词\", sites: \"站点\", site: \"站点\",\n    search_interval: \"搜索间隔\", search_imdbid: \"IMDB 搜索\",\n    episode_group: \"剧集组\", custom_words: \"自定义识别词\",\n    media_category: \"媒体类别\", media_category_id: \"媒体类别 ID\",\n    start_season: \"起始季\", start_episode: \"起始集\", total_episode: \"总集数\",\n    lack_episode: \"缺失集数\", completed_episode: \"已完成集数\",\n    completed_tracks: \"已完成曲目\", total_tracks: \"总曲目\", episodes: \"集数\",\n    last_update: \"最后更新\", last_search: \"最近搜索\",\n    finish_time: \"完成时间\", date: \"添加时间\", username: \"用户\",\n    poster: \"海报\", backdrop: \"背景图\", backdrop_path: \"背景图\",\n    vote: \"评分\", description: \"简介\",\n    current_priority: \"当前优先级\", episode_priority: \"分集优先级\",\n    current_audio_format: \"当前音频格式\", current_bitrate: \"当前码率\",\n    current_bit_depth: \"当前位深\", current_sample_rate: \"当前采样率\",\n    classification_rule_id: \"分类规则\", classification_source: \"分类来源\",\n    execution_status: \"执行状态\"\n};\nconst STATE_LABELS = { N: \"新建\", R: \"订阅中\", P: \"待定\", S: \"暂停\", C: \"已完成\" };\n\n// =======================================================\n\nconst mpUrl = (mediaType) =>\n    mediaType === \"电影\"\n        ? `${MP_BASE_URL}/#/subscribe/movie`\n        : `${MP_BASE_URL}/#/subscribe/tv`;\nconst firstUrl = (...values) => {\n    for (const value of values) {\n        const s = str(value).trim();\n        if (/^https?:\\/\\//i.test(s)) return s;\n    }\n    return \"\";\n};\n// 官网这一行始终输出：没有官网时用 —\nconst homepageLine = (mi = {}, ...extra) =>\n    `\\n${linkHomepage(firstUrl(mi.homepage, mi.home_page, ...extra))}`;\nconst siteIcon = (...values) => {\n    const text = values.map(str).join(\" \").toLowerCase();\n    for (const [keyword, icon] of SITE_ICONS) {\n        if (text.includes(keyword.toLowerCase())) return icon;\n    }\n    return \"\";\n};\n\n// 比较快照时按键名排序，避免对象 key 顺序不同造成“假差异”\nconst stableKey = (value) => {\n    if (Array.isArray(value)) return `[${value.map(stableKey).join(\",\")}]`;\n    if (value && typeof value === \"object\") {\n        const keys = Object.keys(value).sort();\n        return `{${keys.map((key) => `${JSON.stringify(key)}:${stableKey(value[key])}`).join(\",\")}}`;\n    }\n    return JSON.stringify(value);\n};\nconst diffFields = (oldInfo, newInfo) => {\n    const before = oldInfo || {};\n    const afterInfo = newInfo || {};\n    const keys = new Set([...Object.keys(before), ...Object.keys(afterInfo)]);\n    return [...keys].filter((key) => stableKey(before[key]) !== stableKey(afterInfo[key])).sort();\n};\nconst shortValue = (value, max = 140) => {\n    if (value === null || value === undefined || value === \"\") return DASH;\n    const text = typeof value === \"object\" ? JSON.stringify(value) : String(value);\n    return text.length > max ? `${text.slice(0, max - 1)}…` : text;\n};\nconst modifyDetail = (fields, oldInfo, newInfo) =>\n    fields\n        .map((field) => {\n            const label = MODIFY_FIELD_LABELS[field] || field;\n            const show = (info) => {\n                const raw = (info || {})[field];\n                if (field === \"state\" && raw !== undefined && raw !== null) {\n                    return STATE_LABELS[raw] || str(raw);\n                }\n                return shortValue(raw);\n            };\n            return `【${label}】${show(oldInfo)} ➡️ ${show(newInfo)}`;\n        })\n        .join(\"\\n\");\n\n// 解析通知文本里的“标签：值”。兼容两种写法：\n//   1) MoviePilot 刷流插件：任务：xxx / 站点：xxx / 标题：xxx / 原因：xxx\n//   2) 旧格式（部分通知）：【刷流站点】：xxx\nconst parseNoticeFields = (text) => {\n    const fields = [];\n    for (const line of lines(text)) {\n        const bracketed = line.match(/【([^】]+)】\\s*[：:]?\\s*(.+)$/);\n        if (bracketed) {\n            const label = bracketed[1].trim();\n            if (label) fields.push({ label, value: bracketed[2].trim() });\n            continue;\n        }\n        const plain = line.match(/^([^：:]{1,12})[：:]\\s*(.+)$/);\n        if (plain) {\n            const label = plain[1].trim();\n            if (label) fields.push({ label, value: plain[2].trim() });\n        }\n    }\n    return fields;\n};\n// 先按标签找，找不到再退回原来的固定行号，兼容旧格式\nconst noticeField = (fields, pattern, lines, index, sep = \"：\") => {\n    const hit = fields.find((field) => pattern.test(field.label));\n    if (hit) return hit.value;\n    return lines[index] === undefined ? \"\" : after(lines[index], sep);\n};\nconst pickField = (fields, ...patterns) => {\n    for (const pattern of patterns) {\n        const hit = fields.find((field) => pattern.test(field.label) && field.value);\n        if (hit) return hit;\n    }\n    return null;\n};\n// 通用通知的文本没有固定格式：能识别出“标签：值”的就加【】，其它行统一加【内容】\nconst formatGenericText = (text) =>\n    lines(text)\n        .map((line) => line.trim())\n        .filter(Boolean)\n        .map((line) => {\n            const match = line.match(/^([^：:]{1,10})[：:]\\s*(.+)$/);\n            return match ? `【${match[1].trim()}】${match[2].trim()}` : `【内容】${line}`;\n        })\n        .join(\"\\n\");\n\n// 与已格式化事件重复的纯文本通知\nconst DUPLICATE_NOTICE_PATTERNS = [\n    /已入库$/,\n    /(已)?开始下载$/,\n    /已完成订阅$/,\n    /已添加订阅$/,\n    /^开始订阅/,\n    /订阅已(删除|修改|调整|更新|重置)$/,\n    /已重置$/\n];\nconst isDuplicateNotice = (title, text, link) => {\n    const normalized = str(title).trim();\n    if (DUPLICATE_NOTICE_PATTERNS.some((pattern) => pattern.test(normalized))) return true;\n    const body = str(text);\n    return (\n        /^类型：/.test(body) &&\n        /个文件/.test(body) &&\n        /大小：/.test(body) &&\n        str(link).includes(\"/history\")\n    );\n};\n\nconst { kind, payload } = $input.first().json;\nconst normalizedKind = str(kind);\nif (!normalizedKind.startsWith(\"mp-\")) return [];\n// 未知 MoviePilot 类型交给「无匹配来源」节点，避免重复响应\nif (normalizedKind === \"mp-unknown\") return [];\ntestMode = payload.__test === true;\n\nif (normalizedKind === \"mp-subscribe\") {\nconst data = payload.data || {};\nconst type = str(payload.type);\nconst out = [];\nconst add = (group, title, body, extra = {}, meta = {}) => {\n    out.push({ json: { bark: bark(group, title, body, extra), ...meta } });\n};\n\nif (type === \"subscribe.added\") {\n    const mi = data.mediainfo || {};\n    const meta = (data.context && data.context.meta_info) || {};\n    const title = `🆕 ${str(mi.title_year)}${meta.season_episode ? \" \" + str(meta.season_episode) : \"\"} 订阅已添加`;\n    const body =\n        `【评分】${score(mi.vote_average)}\\n` +\n        `【流行度】${val(round(mi.popularity, 2))}\\n` +\n        `【类别】${val(mi.category)}\\n` +\n        `【来自用户】${val(data.username)}\\n\\n` +\n        `${linkMP(mpUrl(mi.type))}\\n` +\n        `${linkTMDB(mi.detail_link)}` +\n        homepageLine(mi, data.homepage);\n    add(\"MoviePilot\", title, body, {\n        icon: firstUrl(mi.logo_path, mi.poster_path) || MP_DEFAULT_ICON,\n        image: firstUrl(mi.backdrop_path, mi.poster_path)\n    }, { source: \"MoviePilot\", event: type });\n    return out;\n}\n\nif (type === \"subscribe.complete\") {\n    const mi = data.mediainfo || {};\n    const si = data.subscribe_info || {};\n    const duration = mediaDurationText(mi);\n    const seasonText =\n        str(mi.season_episode).trim() ||\n        (si.season !== null && si.season !== undefined && str(si.season).trim() !== \"\"\n            ? `S${String(si.season).padStart(2, \"0\")}`\n            : \"\");\n    const title = `🏁 ${str(mi.title_year)}${seasonText ? \" \" + seasonText : \"\"} 订阅已完成`;\n    const body =\n        `【评分】${score(mi.vote_average)}\\n` +\n        `【流行度】${val(round(mi.popularity, 2))}\\n` +\n        `【类别】${val(mi.category)}\\n` +\n        `【时长】${duration}\\n` +\n        `【来自用户】${val(si.username)}\\n\\n` +\n        `${linkMP(mpUrl(mi.type))}\\n` +\n        `${linkTMDB(mi.detail_link)}` +\n        homepageLine(mi, data.homepage);\n    add(\"MoviePilot\", title, body, {\n        // complete 事件的 mediainfo.logo_path 经常是 null，退回海报，避免用默认图标\n        icon: firstUrl(mi.logo_path, mi.poster_path, si.poster) || MP_DEFAULT_ICON,\n        image: firstUrl(mi.backdrop_path, si.backdrop, mi.poster_path)\n    }, { source: \"MoviePilot\", event: type });\n    return out;\n}\n\n// subscribe.modified 有两种：真的改了订阅配置，和系统只动了记账字段的“假修改”。\n// MoviePilot 事件里带 scene（update/status/reset/agent_update）和 fields（真实差异字段），\n// 没有 fields 时用新旧快照自己算差异；没有任何差异就不推送。\nif (type === \"subscribe.modified\") {\n    if (!FORWARD_SUBSCRIBE_MODIFIED) {\n        return fail(\"subscribe.modified 转发已关闭\", \"MoviePilot\");\n    }\n    const si = data.subscribe_info || payload.subscribe_info || {};\n    const old = data.old_subscribe_info || payload.old_subscribe_info || {};\n    const scene = str(data.scene || payload.scene || \"update\");\n    const provided = data.fields || payload.fields;\n    const changed =\n        Array.isArray(provided) && provided.length\n            ? provided.map(str).filter(Boolean).sort()\n            : diffFields(old, si);\n    if (!changed.length) {\n        // 新旧快照和 fields 都解析不到：可能是 MoviePilot 版本差异，\n        // 保守转发一条提示，而不是静默丢掉真实的修改\n        if (!Array.isArray(provided) && !Object.keys(si).length && !Object.keys(old).length) {\n            add(\n                \"MoviePilot\",\n                \"✏️ 订阅已修改\",\n                `【提示】未能从消息里解析出变更字段（可能是 MoviePilot 版本差异）\\n\\n` +\n                    `${linkMP(mpUrl(si.type || old.type))}`,\n                { icon: MP_DEFAULT_ICON, image: firstUrl(si.poster, old.poster) },\n                { source: \"MoviePilot\", event: type, scene }\n            );\n            return out;\n        }\n        return fail(\"subscribe.modified 没有实际字段变化（no-op）\", \"MoviePilot\");\n    }\n    const meaningful = changed.filter((field) => !MODIFY_QUIET_FIELDS.has(field));\n    if (!meaningful.length) {\n        return fail(`subscribe.modified 仅有系统字段变化：${changed.join(\"、\")}`, \"MoviePilot\");\n    }\n    const name = str(si.name) || str(old.name) || \"未知订阅\";\n    const body =\n        `【场景】${val(MODIFY_SCENE_LABELS[scene] || scene)}\\n` +\n        (si.username ? `【来自用户】${val(si.username)}\\n` : \"\") +\n        `【修改内容】\\n${modifyDetail(meaningful, old, si)}\\n\\n` +\n        `${linkMP(mpUrl(si.type || old.type))}`;\n    add(\"MoviePilot\", `✏️ ${name} 订阅已修改`, body, {\n        icon: MP_DEFAULT_ICON,\n        image: firstUrl(si.poster, old.poster)\n    }, { source: \"MoviePilot\", event: type, scene, fields: meaningful });\n    return out;\n}\n\nif (type === \"subscribe.deleted\") {\n    const si = data.subscribe_info || {};\n    const title = `🚫 ${str(si.name)} 订阅已删除`;\n    const body = `【状态】已删除\\n\\n${linkMP(mpUrl(si.type))}`;\n    add(\"MoviePilot\", title, body, {\n        icon: MP_DEFAULT_ICON,\n        image: firstUrl(si.poster)\n    }, { source: \"MoviePilot\", event: type });\n    return out;\n}\n\nreturn fail(`无匹配的 MoviePilot 订阅事件类型：${type || \"(空)\"}`, \"MoviePilot\");\n}\n\nif (normalizedKind === \"mp-download\") {\nconst data = payload.data || {};\nconst type = str(payload.type);\n\nif (type === \"download.added\") {\n    const ctx = data.context || {};\n    const mi = ctx.media_info || {};\n    const meta = ctx.meta_info || {};\n    const torrent = ctx.torrent_info || {};\n    const labels = Array.isArray(torrent.labels) ? torrent.labels : [];\n    const title = `⬇️ ${str(mi.title_year)}${meta.season_episode ? \" \" + str(meta.season_episode) : \"\"} 已开始下载`;\n    const bodyLines = [\n        `【站点】${val(torrent.site_name)}`,\n        `【下载器】${val(data.downloader)}`,\n        `【来自用户】${val(data.username)}`,\n        `【质量】${val(`${str(meta.resource_pix)} ${str(meta.resource_type)}`)}`,\n        `【编码格式】${val(`${str(meta.video_encode)} ${str(meta.audio_encode)}`)}`,\n        `【大小】${formatSize(torrent.size)}`,\n        `【做种数】${val(torrent.seeders)}`,\n        `【相关种子】${val(torrent.title)}`,\n        `【种子发布日期】${val(torrent.pubdate)}`,\n        `【描述】${val(torrent.description)}`\n    ];\n    if (mi.last_air_date != null) bodyLines.push(`【上次有新集释出】${val(mi.last_air_date)}`);\n    if (labels.length) bodyLines.push(`【标签】${val(labels.join(\"·\"))}`);\n    const body =\n        bodyLines.join(\"\\n\") +\n        `\\n\\n${linkMP(mpUrl(mi.type))}\\n` +\n        `${linkTMDB(mi.detail_link)}` +\n        homepageLine(mi, data.homepage);\n    return [\n        {\n            json: {\n                bark: bark(\"MoviePilot\", title, body, {\n                    icon: siteIcon(torrent.site_name) || MP_DEFAULT_ICON,\n                    image: firstUrl(mi.backdrop_path, mi.poster_path)\n                }),\n                source: \"MoviePilot\",\n                event: type\n            }\n        }\n    ];\n}\n\nif (type === \"transfer.complete\") {\n    const mi = data.mediainfo || {};\n    const meta = data.meta || {};\n    const transfer = data.transferinfo || {};\n    const duration = mediaDurationText(mi);\n\n    let transferPath = \"\";\n    if (transfer.success) {\n        const fileitem = transfer.fileitem || {};\n        const target = transfer.target_diritem || {};\n        const filePath = str(fileitem.path);\n        const fileName = str(fileitem.name);\n        const dir =\n            fileName && filePath.includes(fileName)\n                ? filePath.slice(0, filePath.indexOf(fileName))\n                : filePath;\n        transferPath = `[ \"${dir}\" ➡️ \"${str(target.path)}\" ]`;\n    }\n\n    const seasonEpisode = str(meta.season_episode);\n    const jellyfinUrl = mi.type === \"电影\" ? JELLYFIN_MOVIES : JELLYFIN_TV;\n    const title = transfer.success\n        ? `🎬 ${str(mi.title_year)}${seasonEpisode ? \" \" + seasonEpisode : \"\"} 已入库`\n        : `❌ ${str(mi.title_year)}${seasonEpisode ? \" \" + seasonEpisode : \"\"} 入库失败`;\n    const transferLines = [];\n    if (transfer.success) {\n        transferLines.push(`【文件数】${val(transfer.file_count)} 个`);\n        transferLines.push(`【大小】${formatSize(transfer.total_size)}`);\n        transferLines.push(`【转移路径】${transferPath}`);\n    } else {\n        transferLines.push(\"【状态】转移失败\");\n    }\n    const body =\n        `【评分】${score(mi.vote_average)}\\n` +\n        `【流行度】${val(round(mi.popularity, 2))}\\n` +\n        `【类别】${val(mi.category)}\\n` +\n        `【时长】${duration}\\n` +\n        `【质量】${val(`${str(meta.resource_pix)} ${str(meta.resource_type)}`)}\\n` +\n        `【编码格式】${val(`${str(meta.video_encode)} ${str(meta.audio_encode)}`)}\\n` +\n        `${transferLines.join(\"\\n\")}\\n\\n` +\n        `${linkJellyfin(jellyfinUrl)}\\n` +\n        `${linkTMDB(mi.detail_link)}\\n` +\n        `${linkHomepage(mi.homepage)}`;\n\n    // 入库事件的结构化信息，供聚合使用（支持单集和多集范围如 S01 E01-E02，电影无季集不聚合）\n    const seasonMatch = seasonEpisode.match(/S(\\d+)/i);\n    const seasonNum = seasonMatch ? Number(seasonMatch[1]) : Number(meta.begin_season);\n    const parsedEpisodes = [];\n    if (Array.isArray(meta.episode_list) && meta.episode_list.length) {\n        for (const ep of meta.episode_list) {\n            const n = Number(ep);\n            if (Number.isInteger(n) && n > 0) parsedEpisodes.push(n);\n        }\n    }\n    if (!parsedEpisodes.length) {\n        const rangeMatch = seasonEpisode.match(/E(\\d+)\\s*-\\s*E?(\\d+)/i);\n        if (rangeMatch) {\n            const startEp = Number(rangeMatch[1]);\n            const endEp = Number(rangeMatch[2]);\n            if (startEp > 0 && endEp >= startEp && endEp - startEp <= 500) {\n                for (let ep = startEp; ep <= endEp; ep++) parsedEpisodes.push(ep);\n            }\n        } else {\n            for (const m of seasonEpisode.matchAll(/E(\\d+)/gi)) {\n                const n = Number(m[1]);\n                if (n > 0) parsedEpisodes.push(n);\n            }\n        }\n    }\n    const uniqueEpList = [...new Set(parsedEpisodes)].sort((a, b) => a - b);\n    const mediaImage = firstUrl(mi.backdrop_path, mi.poster_path);\n    const transferMeta =\n        transfer.success && Number.isInteger(seasonNum) && seasonNum >= 0 && uniqueEpList.length\n            ? {\n                  kind: \"episode\",\n                  show: str(mi.title_year),\n                  season: seasonNum,\n                  episode: uniqueEpList[0],\n                  episodes: uniqueEpList,\n                  score: str(mi.vote_average),\n                  quality: `${str(meta.resource_pix)} ${str(meta.resource_type)}`.trim(),\n                  duration,\n                  popularity: round(mi.popularity, 2),\n                  category: str(mi.category),\n                  encode: `${str(meta.video_encode)} ${str(meta.audio_encode)}`.trim(),\n                  size: num(transfer.total_size),\n                  fileCount: num(transfer.file_count),\n                  detailLink: str(mi.detail_link),\n                  homepage: str(mi.homepage),\n                  jellyfinUrl,\n                  icon: firstUrl(mi.logo_path, mi.poster_path) || MP_DEFAULT_ICON,\n                  image: mediaImage\n              }\n            : null;\n\n    return [\n        {\n            json: {\n                bark: bark(\"MoviePilot\", title, body, {\n                    icon: firstUrl(mi.logo_path, mi.poster_path) || MP_DEFAULT_ICON,\n                    image: mediaImage\n                }),\n                source: \"MoviePilot\",\n                event: type,\n                transfer: transferMeta\n            }\n        }\n    ];\n}\n\nreturn fail(`无匹配的 MoviePilot 下载事件类型：${type || \"(空)\"}`, \"MoviePilot\");\n}\n\nif (normalizedKind === \"mp-plugin\") {\nconst data = payload.data || {};\nconst d = data.data || {};\nconst siteName = str(d.site_name);\nconst eventName = str(data.event_name);\nconst isBrushFlow = eventName.startsWith(\"brushflow\");\nconst title = eventName === \"brushflow_download_added\" ? \"🖌️ 刷流任务已添加\" : `🖌️ ${eventName}`;\nconst pluginUrl = `${MP_BASE_URL}/#/plugins?id=${encodeURIComponent(\n    str(data.plugin_id) || BRUSHFLOW_PLUGIN_ID\n)}`;\nconst body =\n    `【站点】${val(siteName)}\\n` +\n    `【下载器】${val(data.downloader)}\\n` +\n    `【大小】${formatSize(d.size)}\\n` +\n    `【相关种子】${val([str(d.title).trim(), str(d.description).trim()].filter(Boolean).join(\" | \"))}\\n` +\n    `【种子发布日期】${val(d.pubdate)}\\n\\n` +\n    (isBrushFlow ? `${linkMP(pluginUrl)}\\n` : \"\") +\n    `${linkPT(d.page_url)}`;\n\nreturn [\n    {\n        json: {\n            bark: bark(isBrushFlow ? \"MoviePilot刷流\" : \"MoviePilot\", title, body, {\n                icon: siteIcon(siteName) || MP_DEFAULT_ICON\n            }),\n            source: \"MoviePilot\",\n            event: \"plugin.triggered\"\n        }\n    }\n];\n}\n\nif (normalizedKind === \"mp-notice\") {\nconst d = payload.data || {};\nconst rawTitle = str(d.title);\nconst textLines = lines(d.text);\nconst fields = parseNoticeFields(d.text);\nconst icon = str(d.link).includes(\"AutoSports\")\n    ? SPORTS_ICON\n    : siteIcon(rawTitle, textLines[0] || \"\", textLines[1] || \"\") || MP_DEFAULT_ICON;\nconst noticeImage = firstUrl(d.image, d.poster);\n\nif (rawTitle.includes(\"刷流\")) {\n    // “刷流任务种子下载”与 plugin.triggered 的自定义格式重复，只保留后者\n    if (rawTitle.includes(\"种子下载\") && DROP_DUPLICATE_BRUSHFLOW_NOTICE) {\n        return fail(`刷流下载通知改用 plugin.triggered 格式，忽略重复：${rawTitle}`, \"MoviePilot\");\n    }\n    const siteField = pickField(fields, /^刷流站点$/, /^站点$/, /^任务$/);\n    const site = siteField ? siteField.value : \"\";\n    const usable = (field) => Boolean(field && field.value && !(site && field.value === site));\n    // “相关种子”直接填种子名：标题 / 种子名 / 种子名称 / 种子标题 / 种子 / 相关种子 / 种子描述 / 种子体积\n    const seedField =\n        [\n            /^标题$/,\n            /^种子名称$/,\n            /^种子名$/,\n            /^种子标题$/,\n            /^种子$/,\n            /相关种子/,\n            /种子(描述|信息)/,\n            /种子体积/\n        ]\n            .map((pattern) => fields.find((field) => pattern.test(field.label) && usable(field)))\n            .find(Boolean) || null;\n    const seed = seedField ? seedField.value : \"\";\n    const reasonField = pickField(fields, /^原因$/, /变动原因/);\n    const sizeField = pickField(fields, /^大小$/, /^体积$/, /种子体积/);\n    const bodyLines = [];\n    if (site) bodyLines.push(`【刷流站点】${val(site)}`);\n    if (seed) bodyLines.push(`【相关种子】${val(seed)}`);\n    if (reasonField) {\n        const label = reasonField.label.includes(\"变动\") ? \"变动原因\" : \"原因\";\n        bodyLines.push(`【${label}】${val(reasonField.value)}`);\n    }\n    if (sizeField && sizeField !== seedField) bodyLines.push(`【大小】${val(sizeField.value)}`);\n    bodyLines.push(`\\n${linkMP(`${MP_BASE_URL}/#/plugins?id=${encodeURIComponent(BRUSHFLOW_PLUGIN_ID)}`)}`);\n    return [\n        {\n            json: {\n                bark: bark(\n                    \"MoviePilot刷流\",\n                    `🧹 ${rawTitle.includes(\"删除\") ? \"刷流任务已删除\" : rawTitle.replace(/【/g, \"\").replace(/】/g, \"\")}`,\n                    bodyLines.join(\"\\n\"),\n                    { icon, image: noticeImage }\n                ),\n                source: \"MoviePilot\",\n                event: \"notice.brushflow\"\n            }\n        }\n    ];\n}\n\nif (rawTitle.includes(\"体育比赛\")) {\n    const seedMatch = rawTitle.match(/【([^】]+)】/);\n    const seed = seedMatch ? seedMatch[1] : \"\";\n    const body =\n        `【赛事】${val(noticeField(fields, /赛事/, textLines, 0))}\\n` +\n        `【轮次】${val(noticeField(fields, /轮次/, textLines, 1, \": \"))}\\n` +\n        `【对阵】${val(noticeField(fields, /对阵/, textLines, 2, \": \"))}\\n` +\n        (rawTitle.includes(\"种子\") ? `【种子】${val(seed)}\\n` : \"\") +\n        `\\n${linkJellyfin(JELLYFIN_SPORTS)}`;\n    return [\n        {\n            json: {\n                bark: bark(\n                    \"MoviePilot体育\",\n                    rawTitle.includes(\"已开始下载\") ? \"🏆 体育比赛种子开始下载\" : \"🏆 体育比赛已入库\",\n                    body,\n                    { icon, image: noticeImage }\n                ),\n                source: \"MoviePilot\",\n                event: \"notice.sports\"\n            }\n        }\n    ];\n}\n\nif (/站点.*(?:消息|私信)/.test(rawTitle)) {\n    const siteMatch = rawTitle.match(/站点\\s*[：:]?\\s*(.+?)\\s*(?:有新)?(?:消息|私信)/);\n    const siteField = pickField(fields, /^站点$/);\n    const site =\n        (siteMatch && siteMatch[1].replace(/[【】\\[\\]]/g, \"\").trim()) ||\n        (siteField && siteField.value) ||\n        str(rawTitle).split(\" \")[1] ||\n        \"\";\n    const msgTitle = noticeField(fields, /标题/, textLines, 1);\n    const msgTime = noticeField(fields, /时间/, textLines, 0);\n    // 站点私信正文常为“内容：\\n多行内容”，完整保留所有行，并去掉与标题重复的前缀\n    const contentIdx = textLines.findIndex((line) => /^内容\\s*[：:]/.test(line.trim()));\n    let msgContent = \"\";\n    if (contentIdx !== -1) {\n        const firstLine = textLines[contentIdx].replace(/^\\s*内容\\s*[：:]\\s*/, \"\").trim();\n        const restLines = textLines.slice(contentIdx + 1).map((line) => line.trim()).filter(Boolean);\n        msgContent = [firstLine, ...restLines].filter(Boolean).join(\"\\n\").trim();\n    } else {\n        msgContent = noticeField(fields, /内容/, textLines, 3);\n    }\n    if (msgTitle && msgContent) {\n        const escapedTitle = msgTitle.replace(/[.*+?^$()|[\\]\\\\]/g, \"\\\\$&\");\n        const prefixRe = new RegExp(`^${escapedTitle}\\\\s*[：:]\\\\s*`);\n        msgContent = msgContent.replace(prefixRe, \"\").trim() || msgContent;\n    }\n    const title = site ? `✉️ 站点 ${site} 有新私信` : \"✉️ 站点有新私信\";\n    const body =\n        `【站点】${val(site)}\\n` +\n        `【标题】${val(msgTitle)}\\n` +\n        `【内容】${val(msgContent)}\\n` +\n        `【时间】${val(msgTime)}\\n\\n` +\n        `${linkPT(d.link)}`;\n    return [\n        {\n            json: {\n                bark: bark(\"MoviePilot站点\", title, body, { icon, image: noticeImage }),\n                source: \"MoviePilot\",\n                event: \"notice.site\"\n            }\n        }\n    ];\n}\n\nif (DROP_DUPLICATE_GENERIC_NOTICE && isDuplicateNotice(rawTitle, d.text, d.link)) {\n    return fail(`通用通知与已格式化事件重复，已忽略：${rawTitle}`, \"MoviePilot\");\n}\n\nif (FORWARD_GENERIC_MP_NOTICE) {\n    const group = d.mtype && d.mtype._value_ === \"站点\" ? \"MoviePilot站点\" : \"MoviePilot\";\n    let body = formatGenericText(d.text);\n    if (d.link) body += `\\n\\n${linkMP(d.link)}`;\n    return [\n        {\n            json: {\n                bark: bark(group, `📢 ${rawTitle || \"MoviePilot 通知\"}`, body, { icon, image: noticeImage }),\n                source: \"MoviePilot\",\n                event: \"notice.generic\"\n            }\n        }\n    ];\n}\n\nreturn fail(\"无匹配的 MoviePilot notice.message 类型\", \"MoviePilot\");\n}\n\nreturn fail(`无匹配的 MoviePilot 事件类型：${str(payload.type) || \"(空)\"}`, \"MoviePilot\");\n"
+      },
+      "id": "c5ca3ad1-475d-4e02-b50e-20eb0327d730",
+      "name": "解析 - MoviePilot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "has-bark-1",
+              "leftValue": "={{ Boolean($json.bark && !$json.deduped) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7c4c9b2e-9a7e-4b3e-8f52-1b6d3c8e4a11",
+      "name": "是否有待发消息",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        360
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - /renotify": {
+      "main": [
+        [
+          {
+            "node": "准备请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "准备请求": {
+      "main": [
+        [
+          {
+            "node": "解析 - MoviePilot",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "解析 - RSS",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "解析 - Diun",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "解析 - Wallos",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "解析 - Grafana",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "解析 - Zerobyte",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "解析 - Dockhand",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "无匹配来源",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析 - RSS": {
+      "main": [
+        [
+          {
+            "node": "通知去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析 - Diun": {
+      "main": [
+        [
+          {
+            "node": "通知去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析 - Wallos": {
+      "main": [
+        [
+          {
+            "node": "通知去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析 - Grafana": {
+      "main": [
+        [
+          {
+            "node": "通知去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析 - Zerobyte": {
+      "main": [
+        [
+          {
+            "node": "通知去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析 - Dockhand": {
+      "main": [
+        [
+          {
+            "node": "通知去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "无匹配来源": {
+      "main": [
+        [
+          {
+            "node": "通知去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "通知去重": {
+      "main": [
+        [
+          {
+            "node": "是否是已匹配通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否是已匹配通知": {
+      "main": [
+        [
+          {
+            "node": "响应 200",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "响应 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "响应 200": {
+      "main": [
+        [
+          {
+            "node": "是否有待发消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否入库可聚合": {
+      "main": [
+        [
+          {
+            "node": "入库缓冲",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "发送到 Bark",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "合并入库通知": {
+      "main": [
+        [
+          {
+            "node": "发送到 Bark",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "定时刷出入库": {
+      "main": [
+        [
+          {
+            "node": "刷出入库缓冲",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "刷出入库缓冲": {
+      "main": [
+        [
+          {
+            "node": "合并入库通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析 - MoviePilot": {
+      "main": [
+        [
+          {
+            "node": "通知去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "入库缓冲": {
+      "main": [
+        [
+          {
+            "node": "发送到 Bark",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否有待发消息": {
+      "main": [
+        [
+          {
+            "node": "是否入库可聚合",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": []
+}

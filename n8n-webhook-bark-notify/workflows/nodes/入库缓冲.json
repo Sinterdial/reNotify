@@ -1,0 +1,24 @@
+{
+  "name": "入库缓冲（单节点）",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "/**\n * 入库缓冲（文件队列）\n *\n * 每个入库事件写一个独立 JSON 文件，避免多个 execution 并发修改\n * workflow static data 时互相覆盖、随机丢集数。\n *\n * 需要 n8n 允许 fs：在 stack.env 里加\n *   NODE_FUNCTION_ALLOW_BUILTIN=fs\n * 没有 fs 权限时：直接输出 bark 立即逐条发送（不聚合，但不丢消息）。\n */\n\n// 缓冲目录，默认放在 n8n 的 .n8n 数据卷里；要换路径改这里\nconst BUFFER_DIR = \"/home/node/.n8n/transfer_buffer\";\n\nconst items = $input.all();\nif (!items.length) return [];\n\nlet fs = null;\ntry {\n    fs = require(\"fs\");\n} catch (e) {\n    fs = null;\n}\n\nconst payloads = items\n    .map((item) => item.json)\n    .filter((json) => json && json.transfer && json.transfer.kind === \"episode\" && json.bark);\n\n// 没有 fs 权限：不聚合，直接发，避免静默丢消息\nif (!fs) {\n    console.log(\"入库聚合: 没有 fs 权限（需 NODE_FUNCTION_ALLOW_BUILTIN=fs），本次逐条发送\");\n    return payloads.map((json) => ({ json: { bark: json.bark, source: json.source, event: json.event } }));\n}\n\ntry {\n    fs.mkdirSync(BUFFER_DIR, { recursive: true });\n    for (const json of payloads) {\n        const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;\n        const final = `${BUFFER_DIR}/${stamp}.json`;\n        const tmp = `${final}.tmp`;\n        fs.writeFileSync(tmp, JSON.stringify({ at: Date.now(), transfer: json.transfer, bark: json.bark }));\n        fs.renameSync(tmp, final);\n    }\n} catch (error) {\n    // 写文件失败也退回逐条发送，避免丢通知\n    console.log(`入库聚合: 写缓冲失败（${error.message}），本次逐条发送`);\n    return payloads.map((json) => ({ json: { bark: json.bark, source: json.source, event: json.event } }));\n}\n\nreturn [];\n"
+      },
+      "id": "fd171ae8-877d-4d24-ab10-95eb80e9a60e",
+      "name": "入库缓冲",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        180
+      ]
+    }
+  ],
+  "connections": {},
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

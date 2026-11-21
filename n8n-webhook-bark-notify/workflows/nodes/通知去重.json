@@ -1,0 +1,24 @@
+{
+  "name": "通知去重（单节点）",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "/**\n * 通知去重\n * 同一条消息在时间窗内重复到达（MoviePilot 重试、多通道重复、Miniflux 重投）只发一次；\n * 去重记录存在 workflow static data 里，跨执行有效；【🧪测试】消息不参与。\n * 全部被去重时输出一个 unmatched，避免 Webhook 没有响应可返回。\n */\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\n\n// ======================= 可调参数 =======================\nconst DEDUPE_WINDOW_SECONDS = 120; // 0 = 关闭\n// =======================================================\n\nconst shortHash = (text) => {\n    let hash = 5381;\n    for (let i = 0; i < text.length; i++) {\n        hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;\n    }\n    return (hash >>> 0).toString(36);\n};\n\nconst items = $input.all();\nconst staticData = $getWorkflowStaticData(\"global\");\nconst now = Date.now();\nconst ttl = DEDUPE_WINDOW_SECONDS * 1000;\n\nconst result = [];\nif (DEDUPE_WINDOW_SECONDS) {\n    const recent = (Array.isArray(staticData.recentBarks) ? staticData.recentBarks : []).filter(\n        (item) => item && typeof item.t === \"number\" && now - item.t < ttl\n    );\n    for (const item of items) {\n        const payload = item.json && item.json.bark;\n        if (!payload || str(payload.title).includes(\"【🧪测试】\")) {\n            result.push(item);\n            continue;\n        }\n        const key = shortHash(`${str(payload.group)}\\n${str(payload.title)}\\n${str(payload.body)}`);\n        if (recent.some((entry) => entry.k === key)) continue;\n        recent.push({ k: key, t: now });\n        result.push(item);\n    }\n    staticData.recentBarks = recent.slice(-100);\n} else {\n    result.push(...items);\n}\n\nif (!result.length) {\n    return [\n        {\n            json: {\n                deduped: true,\n                reason: \"通知重复，已幂等忽略\",\n                source: \"dedupe\"\n            }\n        }\n    ];\n}\nreturn result;\n"
+      },
+      "id": "85a2757c-c491-41b9-89eb-54f7d4ca845c",
+      "name": "通知去重",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        540
+      ]
+    }
+  ],
+  "connections": {},
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

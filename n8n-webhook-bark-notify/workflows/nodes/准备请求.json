@@ -1,0 +1,24 @@
+{
+  "name": "准备请求（单节点）",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "/**\n * 准备请求\n * - Webhook body 归一化（兼容 body 直接在顶层）\n * - Miniflux save_entry 归一化为普通 RSS 事件（在网页里点“保存文章”即可当测试按钮）\n * - 可选写文件日志（LOG_PATH 留空则关闭）\n * - 判断来源 kind，交给后面的「解析 - *」节点\n */\n\n// ======================= 可调参数 =======================\n// 文件日志：留空则关闭；开启需在 n8n 环境变量里设置 NODE_FUNCTION_ALLOW_BUILTIN=fs\nconst LOG_PATH = \"\"; // 例如 \"/home/node/.n8n/reNotify_log.txt\"\nconst LOG_MAX_BYTES = 5 * 1024 * 1024; // 日志超过该字节数即触发清理（默认 5 MB）\nconst LOG_KEEP_RATIO = 0.8; // 清理时保留最近内容的比例（0.8 = 约保留 80%）\n// =======================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\n\n// 日志清理：超过 LOG_MAX_BYTES 时只保留尾部 LOG_KEEP_RATIO 比例的内容\nfunction rotateLog(fs, size) {\n    if (!(LOG_MAX_BYTES > 0) || size <= LOG_MAX_BYTES) return;\n    const ratio = LOG_KEEP_RATIO > 0 && LOG_KEEP_RATIO < 1 ? LOG_KEEP_RATIO : 0.8;\n    const keepBytes = Math.max(0, Math.floor(LOG_MAX_BYTES * ratio));\n    const start = Math.max(0, size - keepBytes);\n    const length = size - start;\n    const fd = fs.openSync(LOG_PATH, \"r\");\n    let tail;\n    try {\n        tail = Buffer.alloc(length);\n        fs.readSync(fd, tail, 0, length, start);\n    } finally {\n        fs.closeSync(fd);\n    }\n    // 丢掉可能被截断的第一行，保证日志始终是完整的 JSON 行\n    const firstNewline = tail.indexOf(0x0a);\n    const cut = firstNewline === -1 ? tail.length : firstNewline + 1;\n    const tmpPath = `${LOG_PATH}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 6)}`;\n    try {\n        fs.writeFileSync(tmpPath, tail.subarray(cut));\n        fs.renameSync(tmpPath, LOG_PATH);\n    } catch (err) {\n        try { fs.unlinkSync(tmpPath); } catch (_) {}\n        throw err;\n    }\n}\n\nfunction maybeLog(payload) {\n    if (!LOG_PATH || typeof require !== \"function\") return;\n    try {\n        const fs = require(\"fs\");\n        const dir = LOG_PATH.replace(/[\\\\/][^\\\\/]*$/, \"\");\n        if (dir) fs.mkdirSync(dir, { recursive: true });\n        try {\n            const stat = fs.statSync(LOG_PATH);\n            if (stat.isFile()) rotateLog(fs, stat.size);\n        } catch (e) {\n            // 文件还不存在：首次写入\n        }\n        fs.appendFileSync(LOG_PATH, JSON.stringify(payload) + \"\\n\");\n    } catch (e) {\n        // 日志失败不影响转发\n    }\n}\n\nconst input = $input.first().json || {};\nlet payload = input.body !== undefined ? input.body : input;\nif (typeof payload === \"string\") {\n    try {\n        payload = JSON.parse(payload);\n    } catch (e) {\n        payload = {};\n    }\n}\nif (!payload || typeof payload !== \"object\" || Array.isArray(payload)) payload = {};\n\nconst isSaveTest = payload.event_type === \"save_entry\" && payload.entry;\nif (isSaveTest) {\n    payload = {\n        event_type: \"save_entry\",\n        __test: true,\n        feed: payload.entry.feed || {},\n        entries: [payload.entry]\n    };\n}\n\nmaybeLog(payload);\n\n// 来源识别：顺序与旧版保持一致\nconst type = str(payload.type);\nconst detectKind = () => {\n    if (isSaveTest || \"feed\" in payload) return \"rss\";\n    if (\"data\" in payload) {\n        if (type.startsWith(\"subscribe.\")) return \"mp-subscribe\";\n        if (type === \"download.added\" || type === \"transfer.complete\") return \"mp-download\";\n        if (type === \"plugin.triggered\") return \"mp-plugin\";\n        if (type === \"notice.message\") return \"mp-notice\";\n        return \"mp-unknown\";\n    }\n    if (\"diun_version\" in payload) return \"diun\";\n    if (payload.days_until !== undefined) return \"wallos\";\n    if (\"alerts\" in payload) return \"grafana\";\n    if (\"zerobyte_title\" in payload) return \"zerobyte\";\n    if (\"title\" in payload && \"message\" in payload && (\"timestamp\" in payload || \"time\" in payload)) return \"dockhand\";\n    return \"unknown\";\n};\n\nreturn [{ json: { kind: detectKind(), payload } }];\n"
+      },
+      "id": "c89eccb9-5c1c-4874-ad37-56c27835fb92",
+      "name": "准备请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        540
+      ]
+    }
+  ],
+  "connections": {},
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

@@ -1,0 +1,45 @@
+name: Bug 反馈
+description: 反馈工作流解析异常、入库聚合问题或测试脚本错误
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请**务必对 Payload 中的域名、IP、Token、Bark Key 和站点信息脱敏**。
+  - type: dropdown
+    id: component
+    attributes:
+      label: 涉及模块
+      options:
+        - 解析 - MoviePilot
+        - 解析 - RSS / Miniflux
+        - 解析 - Grafana
+        - 解析 - Dockhand
+        - 解析 - Wallos
+        - 解析 - Diun / Zerobyte
+        - 入库缓冲 / 合并入库通知
+        - 通知去重 / 响应控制
+        - 交互式配置向导 / 导入文档
+    validations:
+      required: true
+  - type: input
+    id: n8n-version
+    attributes:
+      label: n8n 版本与部署方式
+      placeholder: 例如：n8n 1.78.0 / Docker Compose
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请说明实际表现与期望表现。
+    validations:
+      required: true
+  - type: textarea
+    id: payload
+    attributes:
+      label: 脱敏后的触发 Payload（可选）
+      description: 粘贴导致异常的脱敏 JSON（去除真实域名、密钥与隐私信息）。
+      render: json

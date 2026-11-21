@@ -1,0 +1,24 @@
+{
+  "name": "解析 - Zerobyte（单节点）",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "/**\n * 解析 - Zerobyte\n */\n\n// ======================= 可配置图标 =======================\n// Zerobyte 备份通知图标\nconst ZEROBYTE_ICON = \"\"; // 可选：填入你的 Zerobyte 图标 URL（留空则使用 Bark 默认图标）\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nlet testMode = false;\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    return payload;\n};\n\nconst { kind, payload } = $input.first().json;\ntestMode = payload.__test === true;\nif (kind !== \"zerobyte\") return [];\n\nreturn [\n    {\n        json: {\n            bark: bark(\n                \"Zerobyte\",\n                `💾 ${str(payload.zerobyte_title).trim() || \"—\"}`,\n                `【内容】${str(payload.zerobyte_message).trim() || \"—\"}`,\n                { icon: ZEROBYTE_ICON }\n            ),\n            source: \"Zerobyte\"\n        }\n    }\n];\n"
+      },
+      "id": "99caae2c-ff8d-485c-830a-1d2e90c3482d",
+      "name": "解析 - Zerobyte",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        900
+      ]
+    }
+  ],
+  "connections": {},
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

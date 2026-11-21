@@ -1,0 +1,24 @@
+{
+  "name": "解析 - Wallos（单节点）",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "/**\n * 解析 - Wallos（订阅到期提醒）\n */\n\n// ======================= 可配置图标 =======================\n// Wallos 订阅到期提醒图标\nconst WALLOS_ICON = \"https://cdn.jsdelivr.net/gh/selfhst/icons/png/wallos.png\";\n// =========================================================\n\nconst str = (v) => (v === null || v === undefined ? \"\" : String(v));\nlet testMode = false;\nconst utf8Bytes = (ch) => {\n    const cp = ch.codePointAt(0);\n    if (cp <= 0x7f) return 1;\n    if (cp <= 0x7ff) return 2;\n    if (cp <= 0xffff) return 3;\n    return 4;\n};\nconst clipUtf8 = (text, maxBytes, suffix = \"\") => {\n    const s = str(text);\n    let total = 0;\n    for (const ch of s) total += utf8Bytes(ch);\n    if (total <= maxBytes) return s;\n    let suffixBytes = 0;\n    for (const ch of suffix) suffixBytes += utf8Bytes(ch);\n    const limit = Math.max(0, maxBytes - suffixBytes);\n    let used = 0;\n    let out = \"\";\n    for (const ch of s) {\n        const b = utf8Bytes(ch);\n        if (used + b > limit) break;\n        out += ch;\n        used += b;\n    }\n    return out.trimEnd() + suffix;\n};\nconst bark = (group, title, body, extra = {}) => {\n    const fullTitle = clipUtf8(testMode ? `【🧪测试】 ${title}` : title, 240, \"…\");\n    const safeBody = clipUtf8(body, 2800, \"\\n…（内容过长已截断）\");\n    const payload = { group, title: fullTitle, body: safeBody, action: \"none\" };\n    for (const [key, value] of Object.entries(extra)) {\n        if (value !== undefined && value !== null && value !== \"\") payload[key] = value;\n    }\n    return payload;\n};\n\nconst { kind, payload } = $input.first().json;\ntestMode = payload.__test === true;\nif (kind !== \"wallos\") return [];\n\nconst many = payload.subscriptionsinfo || {};\nconst one = payload.subscriptioninfo || {};\nconst pick = (key) => {\n    const a = str(one[key]).trim();\n    if (a) return a;\n    return str(many[key]).trim();\n};\n\nconst DASH = \"—\";\nconst val = (value) => {\n    const s = str(value).trim();\n    return s || DASH;\n};\nconst amountText = [pick(\"price\"), pick(\"currency\")].filter(Boolean).join(\" \");\nconst priceText = [pick(\"payer\"), amountText].filter(Boolean).join(\" ➡️ \") || DASH;\nconst days = pick(\"days\");\nconst title = `💳 ${val(pick(\"name\"))} 订阅即将到期！！！`;\nconst body =\n    `【订阅价格】${priceText}\\n` +\n    `【订阅时限】${days ? `${days} 天` : DASH}\\n` +\n    `【订阅类别】${val(pick(\"category\"))}\\n` +\n    `【订阅日期】${val(pick(\"date\"))}\\n` +\n    `【订阅备注】${val(pick(\"notes\"))}\\n\\n` +\n    `🔗订阅链接🔗 ${val(pick(\"url\"))}`;\n\nreturn [\n    {\n        json: {\n            bark: bark(\"Wallos\", title, body, { icon: WALLOS_ICON }),\n            source: \"Wallos\"\n        }\n    }\n];\n"
+      },
+      "id": "053d6986-409b-4a9d-8fe9-0181ca2a3df2",
+      "name": "解析 - Wallos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        540
+      ]
+    }
+  ],
+  "connections": {},
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

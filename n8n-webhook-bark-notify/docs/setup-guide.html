@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>n8n Webhook → Bark 交互式导入与配置向导</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --elevated: #f1f5f9;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --accent: #2563eb;
+      --accent-soft: rgba(37, 99, 235, 0.1);
+      --ok: #10b981;
+      --code-bg: #0f172a;
+      --code-text: #e2e8f0;
+      --radius: 14px;
+    }
+    html.dark {
+      --bg: #0b1120;
+      --surface: #111827;
+      --elevated: #1e293b;
+      --border: #273449;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #60a5fa;
+      --accent-soft: rgba(96, 165, 250, 0.14);
+      --code-bg: #020617;
+      --code-text: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .wrap { max-width: 1020px; margin: 0 auto; padding: 24px 18px 64px; }
+    header {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 20px 24px; border-radius: var(--radius);
+      background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(124, 58, 237, 0.1));
+      border: 1px solid var(--border); margin-bottom: 18px;
+    }
+    h1 { margin: 0 0 4px; font-size: 20px; }
+    .subtitle { margin: 0; font-size: 13px; color: var(--muted); }
+    .progress-box {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 18px; margin-bottom: 18px; position: sticky; top: 10px; z-index: 20;
+      box-shadow: 0 8px 24px -12px rgba(15, 23, 42, 0.15);
+    }
+    .progress-top { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+    .bar-track { height: 8px; border-radius: 999px; background: var(--elevated); overflow: hidden; }
+    .bar-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #2563eb, #7c3aed, #10b981); transition: width 0.25s ease; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px 22px; margin-bottom: 16px;
+    }
+    .step-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .step-title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
+    .badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; border-radius: 8px; background: var(--accent-soft);
+      color: var(--accent); font-size: 13px; font-weight: 700; shrink: 0;
+    }
+    .done-toggle {
+      display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+      cursor: pointer; user-select: none; padding: 4px 10px; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--elevated); white-space: nowrap;
+    }
+    .done-toggle input { accent-color: var(--ok); cursor: pointer; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+    label.field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+    label.field strong { color: var(--text); font-weight: 600; }
+    .icon-input-row { display: flex; align-items: center; gap: 8px; }
+    .icon-input-row input { flex: 1; min-width: 0; }
+    .icon-preview {
+      width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--elevated); object-fit: contain; flex-shrink: 0; padding: 2px;
+    }
+    input[type="text"], input[type="number"], input[type="password"], select {
+      height: 36px; padding: 0 11px; border-radius: 9px; border: 1px solid var(--border);
+      background: var(--elevated); color: var(--text); font-size: 13px; outline: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 9px;
+      border: 1px solid var(--border); background: var(--elevated); color: var(--text);
+      font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:active { transform: scale(0.98); }
+    .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+    .btn-primary { background: linear-gradient(125deg, #2563eb, #7c3aed); color: #fff; border: none; }
+    .btn-danger { color: #ef4444; background: transparent; border-color: rgba(239,68,68,0.3); }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; align-items: center; }
+    .sub-block {
+      margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--border);
+    }
+    .sub-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      margin-bottom: 8px; font-size: 13px; font-weight: 700;
+    }
+    .map-row {
+      display: grid; grid-template-columns: 1fr 1.6fr auto auto; gap: 8px;
+      align-items: center; margin-bottom: 8px;
+    }
+    pre {
+      position: relative; margin: 10px 0 0; padding: 13px 14px; border-radius: 10px;
+      background: var(--code-bg); color: var(--code-text); font-size: 12px; overflow-x: auto;
+      font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    }
+    .copy-mini {
+      position: absolute; top: 8px; right: 8px; padding: 3px 9px; font-size: 11px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: #fff; cursor: pointer;
+    }
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .tab-btn {
+      padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--elevated); color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .tip {
+      margin-top: 10px; padding: 10px 13px; border-radius: 10px; background: var(--accent-soft);
+      font-size: 12.5px; color: var(--text);
+    }
+    .status-msg { font-size: 12.5px; font-weight: 600; color: var(--ok); }
+    .status-err { color: #ef4444; }
+    details {
+      border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px;
+      margin-top: 8px; background: var(--elevated);
+    }
+    summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+    details p { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>n8n Webhook → Bark 交互式导入与配置向导</h1>
+        <p class="subtitle">纯浏览器本地运行（零数据上传）· 填写基础参数、应用图标与分系统 Logo，一键生成可直接导入的专属工作流 JSON</p>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" id="themeBtn" type="button">切换深浅色</button>
+        <button class="btn" id="resetBtn" type="button">重置进度</button>
+      </div>
+    </header>
+
+    <div class="progress-box">
+      <div class="progress-top">
+        <span id="progressLabel">导入配置进度：0 / 8 步已完成</span>
+        <span id="progressPct" style="color:var(--accent)">0%</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill" id="progressBar"></div></div>
+    </div>
+
+    <!-- Step 1 -->
+    <section class="card">
+      <div class="step-head">
+        <div class="step-title"><span class="badge">1</span> 检查部署环境与 n8n Docker 环境变量</div>
+        <label class="done-toggle"><input type="checkbox" data-step="1" /> 已完成</label>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--muted);">
+        请确认已部署 <b>n8n ≥ 1.60</b> 且 iOS 设备已安装 <b>Bark</b>。若希望开启「剧集多集入库自动合并」和可选文件日志，请在 n8n 容器的环境变量中加入以下两项并重启容器：
+      </p>
+      <pre><button class="copy-mini" data-copy="envSnippet">复制</button><code id="envSnippet">environment:
+  - TZ=Asia/Shanghai
+  # 允许 Code 节点使用 Node 内置 fs 模块（用于入库缓冲队列；未配置时自动降级逐条直发，不丢消息）
+  - NODE_FUNCTION_ALLOW_BUILTIN=fs</code></pre>
+    </section>
+
+    <!-- Step 2 -->
+    <section class="card">
+      <div class="step-head">
+        <div class="step-title"><span class="badge">2</span> 填写基础服务地址与运行参数</div>
+        <label class="done-toggle"><input type="checkbox" data-step="2" /> 已完成</label>
+      </div>
+      <div class="grid">
+        <label class="field">
+          <strong>Bark 服务器地址（必填）</strong>
+          <input id="barkServer" type="text" value="https://api.day.app" placeholder="https://api.day.app 或自建域名" />
+        </label>
+        <label class="field">
+          <strong>Bark Device Key（必填）</strong>
+          <input id="barkKey" type="text" placeholder="从 Bark App 首页复制你的 Key" />
+        </label>
+        <label class="field">
+          <strong>你的 n8n 访问地址</strong>
+          <input id="n8nUrl" type="text" value="https://your-n8n.example.com" placeholder="https://n8n.example.com" />
+        </label>
+        <label class="field">
+          <strong>Webhook 路径（默认 renotify）</strong>
+          <input id="webhookPath" type="text" value="renotify" placeholder="renotify" />
+        </label>
+        <label class="field">
+          <strong>Webhook 推荐认证方式</strong>
+          <select id="authType">
+            <option value="none">none（内网免认证）</option>
+            <option value="basic">basic（用户名 + 密码）</option>
+            <option value="header">header（自定义请求头 X-API-KEY）</option>
+          </select>
+        </label>
+        <label class="field" id="authUserWrap" style="display:none;">
+          <strong>Basic 用户名</strong>
+          <input id="authUser" type="text" value="webhook" />
+        </label>
+        <label class="field" id="authPassWrap" style="display:none;">
+          <strong>Basic 密码 / Header 令牌</strong>
+          <input id="authSecret" type="password" placeholder="仅用于生成下方验证命令，不上传" />
+        </label>
+        <label class="field">
+          <strong>MoviePilot 地址（可选）</strong>
+          <input id="mpUrl" type="text" placeholder="例如 https://mp.example.com" />
+        </label>
+        <label class="field">
+          <strong>Jellyfin 根地址（可选）</strong>
+          <input id="jfUrl" type="text" placeholder="例如 https://jellyfin.example.com" />
+        </label>
+        <label class="field">
+          <strong>去重窗口（秒，0=关闭）</strong>
+          <input id="dedupeSec" type="number" min="0" value="120" />
+        </label>
+        <label class="field">
+          <strong>剧集入库静默合并窗口（秒）</strong>
+          <input id="idleSec" type="number" min="5" value="20" />
+        </label>
+        <label class="field">
+          <strong>原始日志落盘路径（可选，留空关闭）</strong>
+          <input id="logPath" type="text" placeholder="/home/node/.n8n/reNotify_log.txt" />
+        </label>
+      </div>
+    </section>
+
+    <!-- Step 3: 图标与分系统 Logo 配置 -->
+    <section class="card">
+      <div class="step-head">
+        <div class="step-title"><span class="badge">3</span> 自定义应用图标（Icon）与分系统 Logo（可选）</div>
+        <label class="done-toggle"><input type="checkbox" data-step="3" /> 已完成</label>
+      </div>
+      <p style="margin:0 0 12px;font-size:13px;color:var(--muted);">
+        所有解析节点的图标 URL 均已集中提取。可直接使用内置公共图标（留空表示由 Bark 使用默认图标），也可替换为你的公网图床或 <code>cdn.jsdelivr.net/gh/selfhst/icons/png/xxx.png</code> 地址。
+      </p>
+
+      <div class="grid">
+        <label class="field">
+          <strong>MoviePilot 默认兜底图标 (MP_DEFAULT_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconMpDefault" type="text" placeholder="留空不设，或填公网图标 URL" />
+            <img class="icon-preview" id="prev_iconMpDefault" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>MoviePilot 体育赛事图标 (SPORTS_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconSports" type="text" placeholder="留空或填图标 URL" />
+            <img class="icon-preview" id="prev_iconSports" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>Grafana 默认图标 (GRAFANA_DEFAULT_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconGrafana" type="text" value="https://cdn.jsdelivr.net/gh/selfhst/icons/png/grafana.png" />
+            <img class="icon-preview" id="prev_iconGrafana" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>Wallos 图标 (WALLOS_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconWallos" type="text" value="https://cdn.jsdelivr.net/gh/selfhst/icons/png/wallos.png" />
+            <img class="icon-preview" id="prev_iconWallos" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>Diun Docker Hub 图标 (DIUN_DOCKER_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconDiunDocker" type="text" value="https://cdn.jsdelivr.net/gh/selfhst/icons/png/docker.png" />
+            <img class="icon-preview" id="prev_iconDiunDocker" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>Diun 非 Docker Hub 图标 (DIUN_DEFAULT_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconDiunDefault" type="text" placeholder="留空或填图标 URL" />
+            <img class="icon-preview" id="prev_iconDiunDefault" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>Zerobyte 图标 (ZEROBYTE_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconZerobyte" type="text" placeholder="留空或填图标 URL" />
+            <img class="icon-preview" id="prev_iconZerobyte" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>RSS · 其乐 Keylol 图标 (KEYLOL_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconKeylol" type="text" value="https://keylol.com/template/steamcn_metro/src/img/common/icon_with_text_256h.png" />
+            <img class="icon-preview" id="prev_iconKeylol" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>RSS · PT 频道图标 (PT_CHANNEL_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconPtChannel" type="text" placeholder="留空或填图标 URL" />
+            <img class="icon-preview" id="prev_iconPtChannel" alt="" />
+          </div>
+        </label>
+        <label class="field">
+          <strong>RSS · 直播开播图标 (LIVE_STREAM_ICON)</strong>
+          <div class="icon-input-row">
+            <input id="iconLive" type="text" placeholder="留空或填图标 URL" />
+            <img class="icon-preview" id="prev_iconLive" alt="" />
+          </div>
+        </label>
+      </div>
+
+      <!-- 动态规则 1：Grafana 分系统 Logo -->
+      <div class="sub-block">
+        <div class="sub-head">
+          <span>Grafana 分系统专属 Logo（GRAFANA_SYSTEM_ICONS · 逗号分隔关键词，URL 留空则自动回退默认图标）</span>
+          <button class="btn btn-sm" id="addGrafanaRow" type="button">+ 新增系统</button>
+        </div>
+        <div id="grafanaRows"></div>
+      </div>
+
+      <!-- 动态规则 2：MoviePilot PT 站点图标 -->
+      <div class="sub-block">
+        <div class="sub-head">
+          <span>MoviePilot 站点专属图标（SITE_ICONS · 按站点关键词包含匹配）</span>
+          <button class="btn btn-sm" id="addSiteRow" type="button">+ 新增站点</button>
+        </div>
+        <div id="siteRows"></div>
+      </div>
+
+      <!-- 动态规则 3：RSS Spotify 艺人图标 -->
+      <div class="sub-block">
+        <div class="sub-head">
+          <span>RSS · Spotify 艺人专属图标（SPOTIFY_ARTIST_ICONS · 艺人名不区分大小写）</span>
+          <button class="btn btn-sm" id="addArtistRow" type="button">+ 新增艺人</button>
+        </div>
+        <div id="artistRows"></div>
+      </div>
+
+      <div class="btn-row" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);">
+        <input type="file" id="templatePicker" accept=".json" style="display:none" />
+        <button class="btn" id="loadTemplateBtn" type="button">📂 选择模板 workflows/webhook-to-bark.json</button>
+        <button class="btn btn-primary" id="exportWfBtn" type="button">⚡ 一键生成并下载专属工作流 JSON</button>
+        <span id="tplStatus" class="status-msg"></span>
+      </div>
+      <div class="tip">
+        💡 本地双击 <code>file://</code> 打开时，请先点「选择模板」选中仓库里的 <code>workflows/webhook-to-bark.json</code>；通过 GitHub Pages / HTTP 打开会自动载入。步骤 2 与步骤 3 填写的全部参数和图标都会一次性写入导出的 <code>my-webhook-to-bark.json</code>。
+      </div>
+    </section>
+
+    <!-- Step 4 -->
+    <section class="card">
+      <div class="step-head">
+        <div class="step-title"><span class="badge">4</span> 导入工作流到 n8n 并激活</div>
+        <label class="done-toggle"><input type="checkbox" data-step="4" /> 已完成</label>
+      </div>
+      <ol style="margin:0;padding-left:20px;font-size:13px;">
+        <li>打开 n8n 控制台，点击 <b>Add Workflow</b> 新建工作流；</li>
+        <li>点击右上角菜单 <b>⋯</b> → <b>Import from File...</b>，导入上一步下载的 <code>my-webhook-to-bark.json</code>（或原始脱敏模板）；</li>
+        <li>若直接导入了未定制的原始模板，请双击 <b>「发送到 Bark」</b> 节点把 URL 改为你的 <code>Bark 地址/Device Key</code>；</li>
+        <li>点击画布右上角 <b>Active</b> 开关激活工作流（激活后正式路径 <code>/webhook/...</code> 才会持续响应）。</li>
+      </ol>
+    </section>
+
+    <!-- Step 5 -->
+    <section class="card">
+      <div class="step-head">
+        <div class="step-title"><span class="badge">5</span> 为 Webhook 节点配置访问认证（公网部署强烈建议）</div>
+        <label class="done-toggle"><input type="checkbox" data-step="5" /> 已完成</label>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--muted);">
+        双击最左侧的 <b>Webhook</b> 节点，在 <b>Authentication</b> 中选择 <b>Basic Auth</b> 或 <b>Header Auth</b>（如 <code>X-API-KEY</code>），创建凭据并保存。内网环境可保持 <code>None</code>。
+      </p>
+    </section>
+
+    <!-- Step 6 -->
+    <section class="card">
+      <div class="step-head">
+        <div class="step-title"><span class="badge">6</span> 配置各上游应用的 Webhook 通知地址</div>
+        <label class="done-toggle"><input type="checkbox" data-step="6" /> 已完成</label>
+      </div>
+      <p style="margin:0 0 10px;font-size:13px;color:var(--muted);">
+        你的统一收口 Webhook 正式地址（已根据步骤 2 自动生成）：
+      </p>
+      <pre><button class="copy-mini" data-copy="liveWebhookUrl">复制</button><code id="liveWebhookUrl"></code></pre>
+
+      <div class="tabs" style="margin-top:14px;" id="appTabs">
+        <button class="tab-btn active" data-app="mp" type="button">MoviePilot</button>
+        <button class="tab-btn" data-app="miniflux" type="button">Miniflux (RSS)</button>
+        <button class="tab-btn" data-app="grafana" type="button">Grafana</button>
+        <button class="tab-btn" data-app="dockhand" type="button">Dockhand</button>
+        <button class="tab-btn" data-app="wallos" type="button">Wallos</button>
+        <button class="tab-btn" data-app="diun" type="button">Diun</button>
+        <button class="tab-btn" data-app="zerobyte" type="button">Zerobyte</button>
+      </div>
+      <div id="appGuideBody" style="font-size:13px;padding:12px 14px;border-radius:10px;background:var(--elevated);"></div>
+    </section>
+
+    <!-- Step 7 -->
+    <section class="card">
+      <div class="step-head">
+        <div class="step-title"><span class="badge">7</span> 一键发送测试包验证连通性</div>
+        <label class="done-toggle"><input type="checkbox" data-step="7" /> 已完成</label>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--muted);">
+        发送带 <code>__test: true</code> 标记的请求，会自动在标题加上 <code>【🧪测试】</code> 前缀并跳过 120 秒去重，方便反复验证：
+      </p>
+      <pre><button class="copy-mini" data-copy="curlCmd">复制</button><code id="curlCmd"></code></pre>
+      <pre><button class="copy-mini" data-copy="psCmd">复制</button><code id="psCmd"></code></pre>
+    </section>
+
+    <!-- Step 8 -->
+    <section class="card">
+      <div class="step-head">
+        <div class="step-title"><span class="badge">8</span> 常见问题与排错自检</div>
+        <label class="done-toggle"><input type="checkbox" data-step="8" /> 已完成</label>
+      </div>
+      <details>
+        <summary>发送请求返回 404 Not Found？</summary>
+        <p>请确认已在 n8n 画布右上角开启 <b>Active</b>；如果使用的是 <code>/webhook-test/</code> 测试入口，必须先点击画布下方的 Execute/Test workflow 按钮后才会在短时间内监听一次。</p>
+      </details>
+      <details>
+        <summary>连续下载多集剧集没有合并，而是一集发一条？</summary>
+        <p>请检查 n8n 容器环境变量是否已配置 <code>NODE_FUNCTION_ALLOW_BUILTIN=fs</code> 并重启容器；同时确认 <code>入库缓冲</code> 与 <code>刷出入库缓冲</code> 两个节点中的 <code>BUFFER_DIR</code> 一致且进程对其有写权限。</p>
+      </details>
+      <details>
+        <summary>Bark 通知没有显示自定义图标？</summary>
+        <p>Bark iOS 端要求图标 URL 必须能在手机当前网络下通过 HTTPS 直接访问（支持 PNG/JPG）。内网 IP 图标在手机切到蜂窝流量时无法加载，建议使用公网图床或 <code>cdn.jsdelivr.net/gh/selfhst/icons/png/...</code>。</p>
+      </details>
+      <details>
+        <summary>返回 HTTP 400（无匹配通知）是报错吗？</summary>
+        <p>不是异常。工作流对未知来源、与结构化事件重复的 MoviePilot 纯文本通知、以及仅记账字段变化的 <code>subscribe.modified</code> 会主动过滤并返回 400。而 120 秒内的重复通知会返回 HTTP 200（<code>deduped: true</code>）并静默拦截。</p>
+      </details>
+    </section>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "n8n_bark_setup_progress_v2";
+    let loadedTemplate = null;
+    const $ = (id) => document.getElementById(id);
+
+    // 主题切换
+    const applyTheme = (dark) => document.documentElement.classList.toggle("dark", dark);
+    applyTheme(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    $("themeBtn").addEventListener("click", () => document.documentElement.classList.toggle("dark"));
+
+    // 进度条持久化
+    const checkboxes = [...document.querySelectorAll('input[data-step]')];
+    function loadProgress() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+        checkboxes.forEach((cb) => { cb.checked = saved.includes(cb.dataset.step); });
+      } catch {}
+      updateProgress();
+    }
+    function updateProgress() {
+      const done = checkboxes.filter((c) => c.checked).map((c) => c.dataset.step);
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(done)); } catch {}
+      const pct = Math.round((done.length / checkboxes.length) * 100);
+      $("progressLabel").textContent = `导入配置进度：${done.length} / ${checkboxes.length} 步已完成`;
+      $("progressPct").textContent = `${pct}%`;
+      $("progressBar").style.width = `${pct}%`;
+    }
+    checkboxes.forEach((cb) => cb.addEventListener("change", updateProgress));
+    $("resetBtn").addEventListener("click", () => {
+      checkboxes.forEach((c) => (c.checked = false));
+      updateProgress();
+    });
+
+    // 基础图标实时缩略图预览
+    const iconIds = [
+      "iconMpDefault", "iconSports", "iconGrafana", "iconWallos",
+      "iconDiunDocker", "iconDiunDefault", "iconZerobyte",
+      "iconKeylol", "iconPtChannel", "iconLive"
+    ];
+    function syncIconPreview(inputEl, imgEl) {
+      const url = (inputEl.value || "").trim();
+      if (/^https?:\/\//i.test(url)) {
+        imgEl.src = url;
+        imgEl.style.visibility = "visible";
+      } else {
+        imgEl.removeAttribute("src");
+        imgEl.style.visibility = "hidden";
+      }
+    }
+    iconIds.forEach((id) => {
+      const inp = $(id);
+      const img = $("prev_" + id);
+      syncIconPreview(inp, img);
+      inp.addEventListener("input", () => syncIconPreview(inp, img));
+    });
+
+    // 动态映射行构建器（Grafana 系统 / MoviePilot 站点 / Spotify 艺人）
+    function createMapRow(container, keyPlaceholder, keyVal = "", urlVal = "") {
+      const row = document.createElement("div");
+      row.className = "map-row";
+      row.innerHTML = `
+        <input type="text" class="map-key" placeholder="${keyPlaceholder}" />
+        <input type="text" class="map-url" placeholder="图标 URL（留空则忽略/回退默认）" />
+        <img class="icon-preview" alt="" />
+        <button type="button" class="btn btn-sm btn-danger">删除</button>
+      `;
+      const kInp = row.querySelector(".map-key");
+      const uInp = row.querySelector(".map-url");
+      const img = row.querySelector(".icon-preview");
+      const del = row.querySelector("button");
+      kInp.value = keyVal;
+      uInp.value = urlVal;
+      syncIconPreview(uInp, img);
+      uInp.addEventListener("input", () => syncIconPreview(uInp, img));
+      del.addEventListener("click", () => row.remove());
+      container.appendChild(row);
+    }
+
+    // 预置 Grafana 4 个常见系统占位行
+    [
+      ["immortalwrt, openwrt", ""],
+      ["unraid", ""],
+      ["pve, proxmox", ""],
+      ["synology, dsm", ""],
+    ].forEach(([k, u]) => createMapRow($("grafanaRows"), "关键词（逗号分隔，如 ubuntu, debian）", k, u));
+
+    $("addGrafanaRow").addEventListener("click", () => createMapRow($("grafanaRows"), "关键词（逗号分隔，如 ubuntu, debian）"));
+    $("addSiteRow").addEventListener("click", () => createMapRow($("siteRows"), "站点名称关键词"));
+    $("addArtistRow").addEventListener("click", () => createMapRow($("artistRows"), "Spotify 艺人名（小写）"));
+
+    function readMapRows(containerId) {
+      return [...$(containerId).querySelectorAll(".map-row")]
+        .map((r) => ({
+          key: r.querySelector(".map-key").value.trim(),
+          url: r.querySelector(".map-url").value.trim(),
+        }))
+        .filter((x) => x.key);
+    }
+
+    function getFormValues() {
+      const barkServer = ($("barkServer").value.trim() || "https://api.day.app").replace(/\/+$/, "");
+      const barkKey = $("barkKey").value.trim() || "YOUR_BARK_DEVICE_KEY";
+      const n8nUrl = ($("n8nUrl").value.trim() || "https://your-n8n.example.com").replace(/\/+$/, "");
+      const webhookPath = ($("webhookPath").value.trim() || "renotify").replace(/^\/+/, "");
+      return {
+        barkFullUrl: `${barkServer}/${barkKey}`,
+        webhookPath,
+        webhookFullUrl: `${n8nUrl}/webhook/${webhookPath}`,
+        authType: $("authType").value,
+        authUser: $("authUser").value.trim(),
+        authSecret: $("authSecret").value,
+        mpUrl: $("mpUrl").value.trim().replace(/\/+$/, ""),
+        jfUrl: $("jfUrl").value.trim().replace(/\/+$/, ""),
+        dedupeSec: Math.max(0, Number($("dedupeSec").value || 120)),
+        idleSec: Math.max(5, Number($("idleSec").value || 20)),
+        logPath: $("logPath").value.trim(),
+        icons: {
+          mpDefault: $("iconMpDefault").value.trim(),
+          sports: $("iconSports").value.trim(),
+          grafana: $("iconGrafana").value.trim(),
+          wallos: $("iconWallos").value.trim(),
+          diunDocker: $("iconDiunDocker").value.trim(),
+          diunDefault: $("iconDiunDefault").value.trim(),
+          zerobyte: $("iconZerobyte").value.trim(),
+          keylol: $("iconKeylol").value.trim(),
+          ptChannel: $("iconPtChannel").value.trim(),
+          live: $("iconLive").value.trim(),
+          grafanaSystems: readMapRows("grafanaRows"),
+          sites: readMapRows("siteRows").filter((x) => x.url),
+          artists: readMapRows("artistRows").filter((x) => x.url),
+        },
+      };
+    }
+
+    let currentAppTab = "mp";
+    function renderAppGuide(v) {
+      const guides = {
+        mp: `<b>MoviePilot</b>：进入 <code>设定 → 通知 → 新增通知渠道</code>，类型选择 <b>Webhook</b>；请求方式选 <code>POST</code>，报文格式选 <code>JSON</code>，请求地址填 <code>${v.webhookFullUrl}</code>。`,
+        miniflux: `<b>Miniflux (RSS)</b>：进入 <code>Settings → Integrations → Webhook</code>，填入 <code>${v.webhookFullUrl}</code>。点击任意文章的「保存」按钮即可触发带 <code>【🧪测试】</code> 标记的测试推送。`,
+        grafana: `<b>Grafana</b>：进入 <code>Alerting → Contact points → Add contact point</code>，类型选 <b>Webhook</b>，URL 填 <code>${v.webhookFullUrl}</code>，HTTP Method 选 <code>POST</code>。支持自动区分 firing 与 resolved 恢复通知。`,
+        dockhand: `<b>Dockhand</b>：在通知设置中新建 Webhook 渠道，方法 <code>POST</code>，URL 填 <code>${v.webhookFullUrl}</code>，自动解析容器异常、批量更新与镜像清理事件。`,
+        wallos: `<b>Wallos</b>：进入 <code>Settings → Notifications → Webhook</code>，启用 JSON POST 指向 <code>${v.webhookFullUrl}</code>。`,
+        diun: `<b>Diun</b>：在环境变量中添加 <code>DIUN_NOTIF_WEBHOOK_ENDPOINT=${v.webhookFullUrl}</code> 与 <code>DIUN_NOTIF_WEBHOOK_METHOD=POST</code>。`,
+        zerobyte: `<b>Zerobyte</b>：配置 Webhook POST JSON 指向 <code>${v.webhookFullUrl}</code>，负载包含 <code>zerobyte_title</code> 与 <code>zerobyte_message</code>。`,
+      };
+      $("appGuideBody").innerHTML = guides[currentAppTab] || guides.mp;
+    }
+
+    function refreshDynamicSnippets() {
+      const v = getFormValues();
+      $("authUserWrap").style.display = v.authType === "basic" ? "flex" : "none";
+      $("authPassWrap").style.display = v.authType !== "none" ? "flex" : "none";
+      $("liveWebhookUrl").textContent = v.webhookFullUrl;
+      renderAppGuide(v);
+
+      let curlAuth = "";
+      if (v.authType === "basic") {
+        curlAuth = ` \\\n  -u "${v.authUser || "user"}:${v.authSecret || "YOUR_PASSWORD"}"`;
+      } else if (v.authType === "header") {
+        curlAuth = ` \\\n  -H "X-API-KEY: ${v.authSecret || "YOUR_TOKEN"}"`;
+      }
+
+      $("curlCmd").textContent = `# Linux / macOS / Git Bash\ncurl -X POST "${v.webhookFullUrl}"${curlAuth} \\\n  -H "Content-Type: application/json" \\\n  -d '{"zerobyte_title":"连通性测试","zerobyte_message":"n8n Webhook → Bark 部署验证成功！","__test":true}'`;
+      $("psCmd").textContent = `# Windows PowerShell\nInvoke-RestMethod -Method Post -Uri "${v.webhookFullUrl}" -ContentType "application/json" -Body '{"zerobyte_title":"连通性测试","zerobyte_message":"n8n Webhook → Bark 部署验证成功！","__test":true}'`;
+    }
+
+    ["barkServer","barkKey","n8nUrl","webhookPath","authType","authUser","authSecret","mpUrl","jfUrl","dedupeSec","idleSec","logPath"].forEach((id) => {
+      $(id).addEventListener("input", refreshDynamicSnippets);
+      $(id).addEventListener("change", refreshDynamicSnippets);
+    });
+
+    $("appTabs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".tab-btn");
+      if (!btn) return;
+      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentAppTab = btn.dataset.app;
+      renderAppGuide(getFormValues());
+    });
+
+    document.querySelectorAll(".copy-mini").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const target = $(btn.dataset.copy);
+        if (!target) return;
+        try {
+          await navigator.clipboard.writeText(target.textContent);
+          const old = btn.textContent;
+          btn.textContent = "已复制 ✓";
+          setTimeout(() => (btn.textContent = old), 1500);
+        } catch { alert("复制失败，请手动选中文本复制。"); }
+      });
+    });
+
+    async function tryAutoLoadTemplate() {
+      if (location.protocol === "file:") return;
+      try {
+        const resp = await fetch("../workflows/webhook-to-bark.json");
+        if (resp.ok) {
+          loadedTemplate = await resp.json();
+          $("tplStatus").textContent = "✓ 已自动加载工作流模板";
+        }
+      } catch {}
+    }
+
+    $("loadTemplateBtn").addEventListener("click", () => $("templatePicker").click());
+    $("templatePicker").addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        loadedTemplate = JSON.parse(await file.text());
+        $("tplStatus").className = "status-msg";
+        $("tplStatus").textContent = `✓ 已载入模板：${file.name}（${(loadedTemplate.nodes || []).length} 个节点）`;
+      } catch (err) {
+        $("tplStatus").className = "status-msg status-err";
+        $("tplStatus").textContent = `✕ 模板解析失败：${err.message}`;
+      }
+    });
+
+    function replaceConstStr(code, name, value) {
+      const re = new RegExp(`const\\s+${name}\\s*=\\s*"[^"]*";`);
+      return code.replace(re, () => `const ${name} = ${JSON.stringify(value)};`);
+    }
+
+    function downloadText(filename, text, mime) {
+      const blob = new Blob([text], { type: mime });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+    }
+
+    // 生成并下载包含全部基础参数 + 图标配置的专属工作流 JSON
+    $("exportWfBtn").addEventListener("click", () => {
+      if (!loadedTemplate) {
+        $("tplStatus").className = "status-msg status-err";
+        $("tplStatus").textContent = "请先点击左侧按钮选择 workflows/webhook-to-bark.json 模板文件";
+        $("templatePicker").click();
+        return;
+      }
+      const v = getFormValues();
+      const ic = v.icons;
+      const wf = JSON.parse(JSON.stringify(loadedTemplate));
+
+      for (const node of wf.nodes || []) {
+        if (node.type === "n8n-nodes-base.webhook") {
+          node.parameters.path = v.webhookPath;
+          node.name = `Webhook - /${v.webhookPath}`;
+        }
+        if (node.name === "发送到 Bark" && node.parameters) {
+          node.parameters.url = v.barkFullUrl;
+        }
+        if (typeof node.parameters?.jsCode !== "string") continue;
+        let code = node.parameters.jsCode;
+
+        if (node.name === "准备请求" && v.logPath) {
+          code = replaceConstStr(code, "LOG_PATH", v.logPath);
+        }
+        if (node.name === "通知去重") {
+          code = code.replace(/const DEDUPE_WINDOW_SECONDS = \d+;/, () => `const DEDUPE_WINDOW_SECONDS = ${v.dedupeSec};`);
+        }
+        if (node.name === "刷出入库缓冲") {
+          code = code.replace(/const TRANSFER_IDLE_SECONDS = \d+;/, () => `const TRANSFER_IDLE_SECONDS = ${v.idleSec};`);
+        }
+        if (node.name === "合并入库通知") {
+          code = replaceConstStr(code, "MP_DEFAULT_ICON", ic.mpDefault);
+        }
+        if (node.name === "解析 - MoviePilot") {
+          code = replaceConstStr(code, "MP_DEFAULT_ICON", ic.mpDefault);
+          code = replaceConstStr(code, "SPORTS_ICON", ic.sports);
+          if (v.mpUrl) code = replaceConstStr(code, "MP_BASE_URL", v.mpUrl);
+          if (v.jfUrl) code = code.replace(/https:\/\/your-jellyfin\.example\.com/g, () => v.jfUrl);
+          if (ic.sites.length > 0) {
+            const entries = ic.sites.map((s) => `  [${JSON.stringify(s.key)}, ${JSON.stringify(s.url)}]`).join(",\n");
+            code = code.replace(/const SITE_ICONS = \[[\s\S]*?\];/, () => `const SITE_ICONS = [\n${entries}\n];`);
+          }
+        }
+        if (node.name === "解析 - Grafana") {
+          if (ic.grafana) code = replaceConstStr(code, "GRAFANA_DEFAULT_ICON", ic.grafana);
+          if (ic.grafanaSystems.length > 0) {
+            const entries = ic.grafanaSystems
+              .map((g) => {
+                const kws = g.key.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+                return `  [${JSON.stringify(kws)}, ${JSON.stringify(g.url)}]`;
+              })
+              .join(",\n");
+            code = code.replace(/const GRAFANA_SYSTEM_ICONS = \[[\s\S]*?\];/, () => `const GRAFANA_SYSTEM_ICONS = [\n${entries}\n];`);
+          }
+        }
+        if (node.name === "解析 - RSS") {
+          if (ic.keylol) code = replaceConstStr(code, "KEYLOL_ICON", ic.keylol);
+          code = replaceConstStr(code, "PT_CHANNEL_ICON", ic.ptChannel);
+          code = replaceConstStr(code, "LIVE_STREAM_ICON", ic.live);
+          if (ic.artists.length > 0) {
+            const obj = {};
+            ic.artists.forEach((a) => { obj[a.key.toLowerCase()] = a.url; });
+            code = code.replace(/const SPOTIFY_ARTIST_ICONS = \{[\s\S]*?\};/, () => `const SPOTIFY_ARTIST_ICONS = ${JSON.stringify(obj, null, 2)};`);
+          }
+        }
+        if (node.name === "解析 - Wallos" && ic.wallos) {
+          code = replaceConstStr(code, "WALLOS_ICON", ic.wallos);
+        }
+        if (node.name === "解析 - Diun") {
+          if (ic.diunDocker) code = replaceConstStr(code, "DIUN_DOCKER_ICON", ic.diunDocker);
+          code = replaceConstStr(code, "DIUN_DEFAULT_ICON", ic.diunDefault);
+        }
+        if (node.name === "解析 - Zerobyte") {
+          code = replaceConstStr(code, "ZEROBYTE_ICON", ic.zerobyte);
+        }
+
+        node.parameters.jsCode = code;
+      }
+
+      const oldKey = "Webhook - /renotify";
+      const newKey = `Webhook - /${v.webhookPath}`;
+      if (newKey !== oldKey && wf.connections?.[oldKey]) {
+        wf.connections[newKey] = wf.connections[oldKey];
+        delete wf.connections[oldKey];
+      }
+      downloadText("my-webhook-to-bark.json", JSON.stringify(wf, null, 2) + "\n", "application/json;charset=utf-8");
+      $("tplStatus").className = "status-msg";
+      $("tplStatus").textContent = "✓ 已生成含图标配置的 my-webhook-to-bark.json，直接导入 n8n 即可！";
+    });
+
+    loadProgress();
+    refreshDynamicSnippets();
+    tryAutoLoadTemplate();
+  </script>
+</body>
+</html>

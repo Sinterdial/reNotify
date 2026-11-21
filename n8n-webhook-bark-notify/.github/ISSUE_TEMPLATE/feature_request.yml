@@ -1,0 +1,25 @@
+name: 功能建议 / 新来源适配
+description: 建议新增其他自托管应用的通知解析器或增强功能
+title: "[Feat]: "
+labels: ["enhancement"]
+body:
+  - type: input
+    id: app-name
+    attributes:
+      label: 目标应用 / 功能名称
+      placeholder: 例如：Uptime Kuma / Sonarr / Radarr / Emby
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: 需求说明与期望通知格式
+      description: 请描述希望展示的标题、正文排版、图标或跳转链接效果。
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: 脱敏后的 Webhook JSON 样例（如申请新来源适配）
+      description: 请移除真实域名、Token、用户名等隐私信息。
+      render: json

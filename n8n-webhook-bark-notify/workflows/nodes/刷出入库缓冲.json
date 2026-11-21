@@ -1,0 +1,24 @@
+{
+  "name": "刷出入库缓冲（单节点）",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "/**\n * 刷出入库缓冲（文件队列）\n *\n * 由 Schedule Trigger 定时触发：读取缓冲目录，按「剧名+季」分组，\n * 满足「最后一条到达后静默满 TRANSFER_IDLE_SECONDS 秒」或「首条等待达 TRANSFER_MAX_WAIT_SECONDS 秒」\n * 即交给「合并入库通知」。\n *\n * 安全机制：\n * - 用 renameSync 原子抢占为 .processing，避免并发双发；\n * - 不在此节点提前删除 .processing，而是把路径交给「合并入库通知」构造成功后清理；\n * - 若下游意外中断导致 .processing 滞留超过 RECOVERY_SECONDS，自动恢复回 .json 重试一次。\n */\n\nconst BUFFER_DIR = \"/home/node/.n8n/transfer_buffer\"; // 与「入库缓冲」保持一致\nconst TRANSFER_IDLE_SECONDS = 20; // 最后一集到达后静默 20 秒再合并（避免连续入库被腰斩）\nconst TRANSFER_MAX_WAIT_SECONDS = 120; // 首集到达后最长等待 120 秒兜底必发\nconst RECOVERY_SECONDS = 300; // .processing 滞留 5 分钟视为异常中断，自动恢复重试一次\nconst STALE_SECONDS = 3600; // 清理超过 1 小时的残留 .tmp 或二次失败的 .processing\n\nlet fs = null;\ntry {\n    fs = require(\"fs\");\n} catch (e) {\n    fs = null;\n}\nif (!fs) return [];\n\nconst now = Date.now();\n\n// 先检查是否有因异常中断遗留的 .processing 文件：首次滞留恢复为 .recovered.json 重试一次\ntry {\n    for (const name of fs.readdirSync(BUFFER_DIR)) {\n        const full = `${BUFFER_DIR}/${name}`;\n        if (name.endsWith(\".processing\")) {\n            try {\n                const age = now - fs.statSync(full).mtimeMs;\n                if (age > RECOVERY_SECONDS * 1000 && !name.includes(\".recovered.\")) {\n                    const recovered = full.replace(/\\.json\\.processing$/, \".recovered.json\");\n                    fs.renameSync(full, recovered);\n                } else if (age > STALE_SECONDS * 1000) {\n                    fs.unlinkSync(full);\n                }\n            } catch (e) {\n                // 忽略并发竞争\n            }\n        } else if (name.endsWith(\".tmp\")) {\n            try {\n                if (now - fs.statSync(full).mtimeMs > STALE_SECONDS * 1000) fs.unlinkSync(full);\n            } catch (e) {\n                // 忽略\n            }\n        }\n    }\n} catch (e) {\n    return [];\n}\n\nlet files = [];\ntry {\n    files = fs.readdirSync(BUFFER_DIR).filter((name) => name.endsWith(\".json\"));\n} catch (e) {\n    return [];\n}\n\nconst records = [];\nfor (const file of files) {\n    try {\n        const data = JSON.parse(fs.readFileSync(`${BUFFER_DIR}/${file}`, \"utf8\"));\n        records.push({\n            file,\n            at: Number(data.at) || 0,\n            transfer: data.transfer || {},\n            bark: data.bark\n        });\n    } catch (e) {\n        // 跳过损坏/写了一半的文件\n    }\n}\n\nconst groups = new Map();\nfor (const record of records) {\n    const transfer = record.transfer;\n    if (!transfer || transfer.kind !== \"episode\" || !record.bark) continue;\n    const key = `${transfer.show}|S${transfer.season}`;\n    if (!groups.has(key)) groups.set(key, []);\n    groups.get(key).push(record);\n}\n\nconst out = [];\nfor (const list of groups.values()) {\n    const times = list.map((record) => record.at || now);\n    const firstAt = Math.min(...times);\n    const lastAt = Math.max(...times);\n    const idleReady = now - lastAt >= TRANSFER_IDLE_SECONDS * 1000;\n    const maxWaitReady = now - firstAt >= TRANSFER_MAX_WAIT_SECONDS * 1000;\n    if (!idleReady && !maxWaitReady) continue;\n\n    // rename 抢占文件，避免两个刷出执行同时发送同一批\n    const claimed = [];\n    for (const record of list) {\n        const source = `${BUFFER_DIR}/${record.file}`;\n        const target = `${source}.processing`;\n        try {\n            fs.renameSync(source, target);\n            claimed.push({ ...record, target });\n        } catch (e) {\n            // 已被其它执行处理\n        }\n    }\n    if (!claimed.length) continue;\n\n    out.push({\n        json: {\n            claimedFiles: claimed.map((record) => record.target),\n            items: claimed.map((record) => ({\n                episode: record.transfer.episode,\n                episodes: Array.isArray(record.transfer.episodes) && record.transfer.episodes.length\n                    ? record.transfer.episodes\n                    : [record.transfer.episode],\n                size: record.transfer.size,\n                bark: record.bark,\n                meta: record.transfer\n            }))\n        }\n    });\n}\n\nreturn out;\n"
+      },
+      "id": "abd84e4f-048a-4a33-9290-79bb6eda344d",
+      "name": "刷出入库缓冲",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        900
+      ]
+    }
+  ],
+  "connections": {},
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

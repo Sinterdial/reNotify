@@ -1,0 +1,28 @@
+{
+  "name": "响应 200（单节点）",
+  "nodes": [
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ title: $input.first().json.deduped ? '重复通知已忽略' : '通知已接收', type: $input.first().json.deduped ? '重复跳过' : '成功处理', sender: 'n8n', destination: 'Self-Hosted Bark', count: $input.all().filter((i) => !i.json.deduped).length, deduped: Boolean($input.first().json.deduped) }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "94e94057-23da-4a9f-8895-d52c155588a3",
+      "name": "响应 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1420,
+        360
+      ]
+    }
+  ],
+  "connections": {},
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

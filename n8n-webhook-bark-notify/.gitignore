@@ -1,0 +1,15 @@
+# 本地个性化生成的工作流文件（含个人 Bark Key / 域名 / 链接，严禁提交到 GitHub）
+workflows/my-*.json
+*.customized.json
+*.env
+.env.*
+
+# 原始通知日志与运行缓存
+*reNotify_log*.txt
+transfer_buffer/
+
+# 系统与编辑器临时文件
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
