@@ -10,7 +10,9 @@
   <img alt="Bark iOS" src="https://img.shields.io/badge/Bark-iOS%20Push-0EA5E9?style=flat-square" />
   <img alt="Zero External Deps" src="https://img.shields.io/badge/Setup%20Tools-Zero%20Deps-10B981?style=flat-square" />
   <img alt="License MIT" src="https://img.shields.io/badge/License-MIT-6366F1?style=flat-square" />
+  <a href="https://linux.do"><img alt="LINUX DO" src="https://img.shields.io/badge/LINUX%20DO-Community-F59E0B?style=flat-square" /></a>
 </p>
+
 
 ---
 
